@@ -13,10 +13,10 @@ in `ALLOWED_USER_IDS` (`src/commands.ts`, default `local-board`) trigger anythin
 
 | Comment | Runs | Changes anything |
 |---|---|---|
-| `!status` | `curl` Paperclip `/api/health` | No |
+| `!status` | Paperclip `/api/health` plus local patch state | No |
 | `!git-status-lab` | `git status -sb` in `workspace/lab` | No |
 | `!git-pull-lab` | `git pull --ff-only` in `workspace/lab` | Yes (fails today: no remote) |
-| `!check-updates` | installed vs npm-latest `paperclipai` version | No |
+| `!check-updates` | installed vs npm-latest `paperclipai` version, plus patch state | No |
 | `!restart-paperclip` | `scripts/restart-paperclip.sh`, detached, 5 s delay | Restarts the server |
 
 The list lives in `src/commands.ts`. Edit it, then `npm run build`.
@@ -47,21 +47,19 @@ The list lives in `src/commands.ts`. Edit it, then `npm run build`.
 Paperclip wakes the assignee inside the comment request, before any plugin sees the
 comment. A plugin cannot stop that wake. Two parts fix the order:
 
-1. **Server patch** — `scripts/patch-paperclip-server.mjs` edits the installed
-   `@paperclipai/server/dist/routes/issues.js`: a user comment that starts with `!`
-   wakes no agent. It touches only the two comment-wake guards.
+1. **Server patch** — `bang-wake` in `/Users/claude/work/paperclip/patches` (git repo,
+   own README) edits the installed `@paperclipai/server/dist/routes/issues.js`: a user
+   comment that starts with `!` wakes no agent. It touches only the two comment-wake guards.
 2. **Plugin wake** — after it posts the reply, the plugin calls `issues.requestWakeup`
    (reason `bang_command_result`). The agent starts with the output already in the thread.
    `!help` and detached shortcuts wake nobody.
 
 ```sh
-node scripts/patch-paperclip-server.mjs --check   # exit 0 = patched
-node scripts/patch-paperclip-server.mjs           # apply, then restart Paperclip
-node scripts/patch-paperclip-server.mjs --revert  # restore the backup, then restart
+node /Users/claude/work/paperclip/patches/apply-all.mjs --check   # exit 0 = all patches applied
 ```
 
-- **Re-run after every Paperclip update.** `npm` replaces `node_modules` and drops the patch.
-  If Paperclip changed the code, the script stops with "expected 1 match" and changes nothing.
+- **Update Paperclip with** `npm run update-paperclip` in `/Users/claude/work/paperclip/app`.
+  It re-applies the patches. `!restart-paperclip` also re-applies them before it starts the server.
 - **Plugin off = `!` comments wake nobody** while the patch is in place.
 - **The patch applies to every user's `!` comment**, not only `ALLOWED_USER_IDS`.
 

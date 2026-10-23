@@ -22,6 +22,9 @@ else
   echo "no running server found"
 fi
 
+echo "re-applying local patches"
+"$NODE" $PAPERCLIP_ROOT/patches/apply-all.mjs
+
 echo "starting server"
 cd "$PAPERCLIP_ROOT" || exit 1
 HOME=/Users/claude PAPERCLIP_HOME=$PAPERCLIP_ROOT/state/paperclip PAPERCLIP_INSTANCE_ID=lab PAPERCLIP_TELEMETRY_DISABLED=1 \

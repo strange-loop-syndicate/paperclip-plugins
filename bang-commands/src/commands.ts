@@ -39,8 +39,8 @@ export function buildCommands(root: string): BangCommand[] {
   return [
     {
       name: "status",
-      description: "Paperclip health endpoint (read-only)",
-      argv: ["/usr/bin/curl", "-sS", "-m", "10", "http://127.0.0.1:3100/api/health"],
+      description: "Paperclip health and local patch state (read-only)",
+      argv: ["/bin/sh", `${root}/scripts/status.sh`],
       timeoutMs: 15_000,
     },
     {
@@ -57,7 +57,7 @@ export function buildCommands(root: string): BangCommand[] {
     },
     {
       name: "check-updates",
-      description: "Installed vs latest `paperclipai` version on npm (read-only, installs nothing)",
+      description: "Installed vs latest `paperclipai` version on npm, plus patch state (read-only, installs nothing)",
       argv: ["/bin/sh", `${root}/scripts/check-updates.sh`],
       cwd: PAPERCLIP_ROOT,
       timeoutMs: 60_000,

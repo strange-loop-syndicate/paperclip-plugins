@@ -12,3 +12,6 @@ if [ "$installed" = "$latest" ]; then
 else
   echo "Update available. Nothing was installed."
 fi
+echo
+"$NODE_BIN/node" /Users/claude/work/paperclip/patches/apply-all.mjs --check
+exit 0
