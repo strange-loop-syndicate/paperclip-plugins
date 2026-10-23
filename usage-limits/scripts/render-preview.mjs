@@ -1,5 +1,5 @@
 // Render the sidebar rows beside the host's own nav items, styled by the
-// host's real CSS bundle. Writes evidence/preview-v3.html. Open it in a
+// host's real CSS bundle. Writes evidence/preview-v4.html. Open it in a
 // browser: a script in the page measures the icon and label x positions of
 // every row and prints whether the plugin rows line up with the nav items.
 //
@@ -136,8 +136,8 @@ const check = `
 
 mkdirSync("evidence", { recursive: true });
 writeFileSync(
-  "evidence/preview-v3.html",
-  `<!doctype html><html><head><meta charset="utf-8"><title>Usage limits v0.3 preview</title>
+  "evidence/preview-v4.html",
+  `<!doctype html><html><head><meta charset="utf-8"><title>Usage limits v0.4 preview</title>
 <!-- Host CSS: ${path.join(uiDist, "assets", cssFile)} -->
 <link rel="stylesheet" href="${cssHref}">
 <style>
@@ -148,7 +148,7 @@ section{margin-bottom:24px}h3{font:600 13px system-ui;margin:0 0 6px}
 #check{font:11px/1.4 ui-monospace,monospace;white-space:pre-wrap;padding:8px;border-radius:6px}
 #check.ok{background:#dcfce7}#check.bad{background:#fee2e2}
 </style></head><body>
-<h2 style="font:600 15px system-ui;margin:0 0 8px">Usage limits v0.3: plugin rows (Claude, Codex) under the host's Work nav items</h2>
+<h2 style="font:600 15px system-ui;margin:0 0 8px">Usage limits v0.4: plugin rows (Claude, Codex) under the host's Work nav items</h2>
 <pre id="check">Open in a browser to run the alignment check.</pre>
 ${sections}
 ${check}
@@ -159,4 +159,4 @@ for (const [title, view] of cases) {
   const rows = view.kind === "rows" ? view.rows.map((r) => `${r.slug}: ${r.text}`).join(" | ") : `error: ${view.message}`;
   console.log(`${title}\n  ${rows}`);
 }
-console.log(`\nwrote evidence/preview-v3.html (host CSS ${cssFile})`);
+console.log(`\nwrote evidence/preview-v4.html (host CSS ${cssFile})`);

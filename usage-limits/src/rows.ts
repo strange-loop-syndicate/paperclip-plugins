@@ -1,4 +1,4 @@
-// One sidebar row per used provider: "10% / 83% / 2h 14m" = 5-hour used,
+// One sidebar row per used provider: "10% 83% 2:14" = 5-hour used,
 // weekly used, time to the next reset. Pure, so `node --test` can load it.
 
 import type { RateLimitSnapshot } from "./runlog.ts";
@@ -127,11 +127,21 @@ export function nextResetAt(row: UsageRow, now: number): number | null {
   return null;
 }
 
-/** "10% / 83% / 2h 14m"; "—" when neither window is known. */
+/** Compact reset time for the row: "0:05", "2:30" under 24 h; "3d4h", "6d" from 24 h. */
+export function compactDuration(ms: number): string {
+  const totalMinutes = Math.max(0, Math.ceil(ms / 60_000));
+  const totalHours = Math.floor(totalMinutes / 60);
+  if (totalHours < 24) return `${totalHours}:${String(totalMinutes % 60).padStart(2, "0")}`;
+  const days = Math.floor(totalHours / 24);
+  const hours = totalHours % 24;
+  return hours === 0 ? `${days}d` : `${days}d${hours}h`;
+}
+
+/** "10% 83% 2:14"; "—" when neither window is known. */
 export function rowText(row: UsageRow, now: number): string {
   if (!hasKnownWindow(row)) return "—";
   const reset = nextResetAt(row, now);
-  return `${percentText(row.fiveHour)} / ${percentText(row.weekly)} / ${reset !== null ? formatDuration(reset - now) : "—"}`;
+  return `${percentText(row.fiveHour)} ${percentText(row.weekly)} ${reset !== null ? compactDuration(reset - now) : "—"}`;
 }
 
 function windowLine(name: string, w: UsageWindow | null, now: Date): string {

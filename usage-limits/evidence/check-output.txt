@@ -1,88 +1,89 @@
-# npm run check — 2026-10-23T18:48:48Z — node v24.22.0
+# npm run check — 2026-10-23T20:09:45Z — node v24.22.0
 
-> paperclip-limits-plugin@0.3.0 check
+> paperclip-limits-plugin@0.4.0 check
 > npm run typecheck && npm test && npm run build && npm run validate
 
 
-> paperclip-limits-plugin@0.3.0 typecheck
+> paperclip-limits-plugin@0.4.0 typecheck
 > tsc --noEmit
 
 
-> paperclip-limits-plugin@0.3.0 test
+> paperclip-limits-plugin@0.4.0 test
 > node --test test/*.test.ts
 
-✔ backoff: 5 min normally, doubling to a 30 min cap after failures (0.728291ms)
-✔ first load fetches; then nothing until 5 min have passed, across tabs (0.685875ms)
-✔ a running fetch in another tab blocks both automatic and manual fetches (0.067167ms)
-✔ a tab closed mid-fetch does not block the others for longer than the in-flight TTL + gap (0.064667ms)
-✔ a 429 on a used provider backs off 10, 20, 30, 30 min and keeps the last good windows (0.133708ms)
-✔ a failing provider that no agent uses does not cause a backoff (0.062416ms)
-✔ a missing used provider counts as a failure (0.051ms)
-✔ a failed request keeps last good data and backs off (0.081625ms)
-✔ manual refresh ignores the backoff but obeys the 60 s minimum gap (0.095375ms)
-✔ a far-future timestamp (clock change, bad data) cannot block fetching (0.1255ms)
-✔ parseCache round-trips a stored entry and rejects foreign or broken values (0.206834ms)
-✔ usedProviders keeps only claude_local/codex_local, skips terminated, stable order (1.276708ms)
-✔ usedProviders ignores a provider whose only agent is terminated (0.089084ms)
-✔ formatResetIn covers minutes, hours, days, past and invalid (0.203584ms)
-✔ normalizePercent clamps and rounds; severity thresholds (0.093833ms)
-✔ buildPanels maps ok windows per used provider only (0.36925ms)
-✔ buildPanels marks provider errors and missing providers unavailable (0.261875ms)
-✔ buildPanels falls back to errorFamily, then a generic message (0.117292ms)
-✔ buildPanels prefers an ok result over a failed duplicate (0.069334ms)
-✔ buildPanels shows empty state when ok but no windows (e.g. bedrock) (0.062791ms)
-✔ buildPanels: a failed request with no older data is unavailable, full text kept for the tooltip (0.133792ms)
-✔ credit-style window without a percent keeps its value label (0.092708ms)
-✔ buildPanels keeps last good windows as stale when the provider now fails (0.12175ms)
-✔ buildPanels keeps last good windows as stale when the whole request fails (0.076833ms)
-✔ shortError: rate limit, timeout, auth, generic; retry hint only while waiting (0.059792ms)
-✔ relabelWindow: a 5h label that resets days away becomes Weekly limit (0.095333ms)
-✔ relabelWindow leaves consistent, unknown and non-5h labels alone (0.047667ms)
-✔ toWindowRow applies the relabel (0.038416ms)
-✔ a $0 credits row next to percent windows moves to the tooltip (0.122667ms)
-✔ isZeroCreditRow keeps real balances and credits-only accounts visible (0.063709ms)
-✔ stale: a window that reset since the data was fetched drops its old percent (0.137833ms)
-✔ stale: when every window has reset the line shows no percent (0.075ms)
-✔ ok data is never marked reset, even with a past resetsAt (0.041667ms)
-✔ formatAsOf adds the date only when the data is from an earlier day (0.621667ms)
-✔ formatDuration and formatClock (0.050375ms)
-✔ row text: 5-hour % / weekly % / time to the 5-hour reset (1.179959ms)
-✔ stale window: an event older than a window's reset makes it unknown, not 0% (0.460292ms)
-✔ windowAt rounds and clamps; past reset clears the percent (0.07725ms)
-✔ no data: icon + — with the reason in the title (0.087041ms)
-✔ Codex row from quota windows: a weekly '5h limit' counts as weekly, credits ignored (0.769666ms)
-✔ Claude quota-windows fallback uses the session and all-models weekly windows (0.102ms)
-✔ a failing provider with no data: — and the short reason in the title (0.148667ms)
-✔ pickRow prefers run-log data, then quota data, then the run-log reason (0.137292ms)
-✔ parses an escaped rate_limit_event inside a log chunk (real log line) (0.619584ms)
-✔ finds the event among other stream lines in the same chunk (0.96375ms)
-✔ an event split across two chunks is joined; its time is the completing line's (0.115333ms)
-✔ a tail read skips the partial first line and a cut-off last line; stderr is ignored (0.109833ms)
-✔ multiple events: the newest by log time wins (0.532125ms)
-✔ older events without unifiedWindows fill only the named window (0.100042ms)
-✔ scanCandidates keeps the given agents' runs, newest activity first, bounded (0.531ms)
-✔ scanRuns reads tails only, falls back to the head, and stops once older runs cannot be newer (0.333291ms)
-✔ scanRuns keeps going past a failing log and reports it (0.148208ms)
-✔ run-log cache: due every 2 min, waits for another tab, keeps the newer snapshot (0.3205ms)
-✔ used-providers returns the providers of this company's agents (1.086875ms)
-✔ used-providers returns nothing without a companyId (0.120458ms)
-✔ used-providers needs the agents.read capability (0.189125ms)
-ℹ tests 56
+✔ backoff: 5 min normally, doubling to a 30 min cap after failures (0.877875ms)
+✔ first load fetches; then nothing until 5 min have passed, across tabs (0.614833ms)
+✔ a running fetch in another tab blocks both automatic and manual fetches (0.069542ms)
+✔ a tab closed mid-fetch does not block the others for longer than the in-flight TTL + gap (0.068291ms)
+✔ a 429 on a used provider backs off 10, 20, 30, 30 min and keeps the last good windows (0.134958ms)
+✔ a failing provider that no agent uses does not cause a backoff (0.062417ms)
+✔ a missing used provider counts as a failure (0.049167ms)
+✔ a failed request keeps last good data and backs off (0.079ms)
+✔ manual refresh ignores the backoff but obeys the 60 s minimum gap (0.090458ms)
+✔ a far-future timestamp (clock change, bad data) cannot block fetching (0.1405ms)
+✔ parseCache round-trips a stored entry and rejects foreign or broken values (0.206792ms)
+✔ usedProviders keeps only claude_local/codex_local, skips terminated, stable order (1.331792ms)
+✔ usedProviders ignores a provider whose only agent is terminated (0.095042ms)
+✔ formatResetIn covers minutes, hours, days, past and invalid (0.107041ms)
+✔ normalizePercent clamps and rounds; severity thresholds (0.068458ms)
+✔ buildPanels maps ok windows per used provider only (0.409209ms)
+✔ buildPanels marks provider errors and missing providers unavailable (0.323041ms)
+✔ buildPanels falls back to errorFamily, then a generic message (0.158208ms)
+✔ buildPanels prefers an ok result over a failed duplicate (0.075917ms)
+✔ buildPanels shows empty state when ok but no windows (e.g. bedrock) (0.070875ms)
+✔ buildPanels: a failed request with no older data is unavailable, full text kept for the tooltip (0.188542ms)
+✔ credit-style window without a percent keeps its value label (0.114541ms)
+✔ buildPanels keeps last good windows as stale when the provider now fails (0.1835ms)
+✔ buildPanels keeps last good windows as stale when the whole request fails (0.149875ms)
+✔ shortError: rate limit, timeout, auth, generic; retry hint only while waiting (0.069167ms)
+✔ relabelWindow: a 5h label that resets days away becomes Weekly limit (0.131334ms)
+✔ relabelWindow leaves consistent, unknown and non-5h labels alone (0.049291ms)
+✔ toWindowRow applies the relabel (0.041458ms)
+✔ a $0 credits row next to percent windows moves to the tooltip (0.136209ms)
+✔ isZeroCreditRow keeps real balances and credits-only accounts visible (0.073333ms)
+✔ stale: a window that reset since the data was fetched drops its old percent (0.088542ms)
+✔ stale: when every window has reset the line shows no percent (0.057334ms)
+✔ ok data is never marked reset, even with a past resetsAt (0.037667ms)
+✔ formatAsOf adds the date only when the data is from an earlier day (0.74075ms)
+✔ formatDuration and formatClock (0.029833ms)
+✔ row text: 5-hour %, weekly %, time to the 5-hour reset, one space apart (4.510208ms)
+✔ stale window: an event older than a window's reset makes it unknown, not 0% (1.136083ms)
+✔ windowAt rounds and clamps; past reset clears the percent (0.188041ms)
+✔ no data: icon + — with the reason in the title (0.101041ms)
+✔ Codex row from quota windows: a weekly '5h limit' counts as weekly, credits ignored (0.72675ms)
+✔ Claude quota-windows fallback uses the session and all-models weekly windows (0.107584ms)
+✔ a failing provider with no data: — and the short reason in the title (0.155542ms)
+✔ pickRow prefers run-log data, then quota data, then the run-log reason (0.132084ms)
+✔ compact reset: H:MM under 24 h, compact days from 24 h (0.08775ms)
+✔ row text: the board's example, and unknown parts (0.134791ms)
+✔ parses an escaped rate_limit_event inside a log chunk (real log line) (0.653458ms)
+✔ finds the event among other stream lines in the same chunk (0.996708ms)
+✔ an event split across two chunks is joined; its time is the completing line's (0.184417ms)
+✔ a tail read skips the partial first line and a cut-off last line; stderr is ignored (0.230875ms)
+✔ multiple events: the newest by log time wins (0.179834ms)
+✔ older events without unifiedWindows fill only the named window (0.612875ms)
+✔ scanCandidates keeps the given agents' runs, newest activity first, bounded (0.490334ms)
+✔ scanRuns reads tails only, falls back to the head, and stops once older runs cannot be newer (0.307458ms)
+✔ scanRuns keeps going past a failing log and reports it (0.144375ms)
+✔ run-log cache: due every 2 min, waits for another tab, keeps the newer snapshot (0.30125ms)
+✔ used-providers returns the providers of this company's agents (1.165833ms)
+✔ used-providers returns nothing without a companyId (0.20775ms)
+✔ used-providers needs the agents.read capability (0.288708ms)
+ℹ tests 58
 ℹ suites 0
-ℹ pass 56
+ℹ pass 58
 ℹ fail 0
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 304.617292
+ℹ duration_ms 339.243625
 
-> paperclip-limits-plugin@0.3.0 build
+> paperclip-limits-plugin@0.4.0 build
 > node ./build.mjs
 
 built dist/manifest.js, dist/worker.js, dist/ui/index.js
 
-> paperclip-limits-plugin@0.3.0 validate
+> paperclip-limits-plugin@0.4.0 validate
 > node scripts/validate-manifest.mjs
 
-manifest valid: lab.usage-limits@0.3.0 capabilities=agents.read,ui.sidebar.register
-exit=0
+manifest valid: lab.usage-limits@0.4.0 capabilities=agents.read,ui.sidebar.register

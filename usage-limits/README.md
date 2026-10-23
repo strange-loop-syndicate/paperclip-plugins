@@ -3,7 +3,8 @@
 Shows Claude and Codex subscription usage in the Paperclip sidebar.
 
 - **Where:** one plain row per used provider in the sidebar nav list, after Projects/Workspaces (`sidebar` slot). No expand, no detail box.
-- **Row:** provider logo + `X% / Y% / <reset>`, e.g. `11% / 83% / 3h 54m`. X = 5-hour window used, Y = weekly window used, `<reset>` = time to the next 5-hour reset (the weekly reset when the 5-hour value is unknown).
+- **Row:** provider logo + `X% Y% <reset>`, one space apart, e.g. `14% 84% 2:30`. X = 5-hour window used, Y = weekly window used, `<reset>` = time to the next 5-hour reset (the weekly reset when the 5-hour value is unknown).
+- **Reset format:** `H:MM` under 24 h (`0:05`, `2:30`); compact days from 24 h (`3d4h`, `6d`). An unknown part shows `—`, e.g. `— 3% 6d`.
 - **Alignment:** the row uses the host's own nav item classes (`SidebarNavItem`): same icon column and 16 px size, same label x, font size, weight and line height as Routines, Artifacts and the rest.
 - **Hover:** the `title` carries full labels, both reset times, the data source and its age, and any reason for missing data.
 - **No data:** logo + `—`, reason in the hover title. A window whose reset time has passed since the data was read shows `—`, never an old or 0% value.
@@ -43,7 +44,7 @@ Both sources use one `localStorage` entry per browser, a Web Lock so only one ta
 |---|---|
 | `src/worker.ts` | Data handler `used-providers`: lists company agents (`agents.read`), returns used providers and agent IDs per provider. |
 | `src/runlog.ts` | Run-log parser, bounded run scan and run-log cache decisions. Unit-tested. |
-| `src/rows.ts` | Row model and formatter: `X% / Y% / reset`, hover title, reset-since handling, source choice. Unit-tested. |
+| `src/rows.ts` | Row model and formatter: `X% Y% reset`, hover title, reset-since handling, source choice. Unit-tested. |
 | `src/mapping.ts` | Quota-windows response → panels (stale data, Codex label fix, `$0` credits). Unit-tested. |
 | `src/cache.ts` | Quota-windows fetch/backoff decisions. Unit-tested. |
 | `src/ui/index.tsx` | Sidebar rows. |
@@ -60,7 +61,7 @@ Needs Node 24+.
 cd /Users/claude/work/workspace/paperclip-limits-plugin
 npm ci
 npm run check     # typecheck + tests + build + manifest validation
-npm run preview   # rows beside the host's nav items, host CSS, alignment check -> evidence/preview-v3.html
+npm run preview   # rows beside the host's nav items, host CSS, alignment check -> evidence/preview-v4.html
 ```
 
 `npm run validate` checks `dist/manifest.js` with the host's own schema from `/Users/claude/work/paperclip/app/node_modules/@paperclipai/shared`. Pass another path as the first argument if the host lives elsewhere.

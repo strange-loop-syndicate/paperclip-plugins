@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildPanels, type PanelInput, type ProviderQuotaResult } from "../src/mapping.ts";
-import { hasKnownWindow, pickRow, rowFromPanel, rowFromSnapshot, rowText, rowTitle, windowAt } from "../src/rows.ts";
+import { compactDuration, hasKnownWindow, pickRow, rowFromPanel, rowFromSnapshot, rowText, rowTitle, windowAt } from "../src/rows.ts";
 import type { RateLimitSnapshot } from "../src/runlog.ts";
 
 const CLAUDE = { slug: "anthropic", label: "Claude" };
@@ -23,9 +23,9 @@ function quotaInput(results: ProviderQuotaResult[] | null, extra: Partial<PanelI
   return { results, fetchedAt: results ? NOW - MIN : null, fetchError: null, lastGood: {}, retryAt: null, ...extra };
 }
 
-test("row text: 5-hour % / weekly % / time to the 5-hour reset", () => {
+test("row text: 5-hour %, weekly %, time to the 5-hour reset, one space apart", () => {
   const row = rowFromSnapshot(CLAUDE, snap(10.4, NOW + 2 * HOUR + 14 * MIN, 83, NOW + 26 * HOUR), NOW);
-  assert.equal(rowText(row, NOW), "10% / 83% / 2h 14m");
+  assert.equal(rowText(row, NOW), "10% 83% 2:14");
   const title = rowTitle(row, NOW);
   assert.match(title, /^Claude usage limits\n5-hour window: 10% used, resets in 2h 14m \(/);
   assert.match(title, /\nWeekly window: 83% used, resets in 1d 2h \(/);
@@ -36,7 +36,7 @@ test("stale window: an event older than a window's reset makes it unknown, not 0
   // Event from 6 h ago: its 5-hour window reset 1 h ago, the weekly one is still running.
   const row = rowFromSnapshot(CLAUDE, snap(95, NOW - HOUR, 83, NOW + 26 * HOUR, NOW - 6 * HOUR), NOW);
   assert.deepEqual(row.fiveHour, { percent: null, resetsAt: NOW - HOUR, resetSince: true });
-  assert.equal(rowText(row, NOW), "— / 83% / 1d 2h", "next reset falls back to the weekly one");
+  assert.equal(rowText(row, NOW), "— 83% 1d2h", "next reset falls back to the weekly one");
   assert.match(rowTitle(row, NOW), /5-hour window: unknown \(reset at .*, after the latest data\)/);
   assert.doesNotMatch(rowText(row, NOW), /95|0%/);
 
@@ -72,7 +72,7 @@ test("Codex row from quota windows: a weekly '5h limit' counts as weekly, credit
   const row = rowFromPanel(panel, NOW);
   assert.equal(row.fiveHour, null);
   assert.equal(row.weekly!.percent, 3);
-  assert.equal(rowText(row, NOW), "— / 3% / 6d");
+  assert.equal(rowText(row, NOW), "— 3% 6d");
   assert.match(rowTitle(row, NOW), /5-hour window: no data\nWeekly window: 3% used/);
   assert.match(rowTitle(row, NOW), /Source: usage API, as of /);
 
@@ -87,7 +87,7 @@ test("Codex row from quota windows: a weekly '5h limit' counts as weekly, credit
     },
   ];
   const [panel2] = buildPanels([CODEX], quotaInput(both), new Date(NOW));
-  assert.equal(rowText(rowFromPanel(panel2, NOW), NOW), "40% / 12% / 1h 00m");
+  assert.equal(rowText(rowFromPanel(panel2, NOW), NOW), "40% 12% 1:00");
 });
 
 test("Claude quota-windows fallback uses the session and all-models weekly windows", () => {
@@ -103,7 +103,7 @@ test("Claude quota-windows fallback uses the session and all-models weekly windo
     },
   ];
   const [panel] = buildPanels([CLAUDE], quotaInput(results), new Date(NOW));
-  assert.equal(rowText(rowFromPanel(panel, NOW), NOW), "22% / 41% / 3h 00m");
+  assert.equal(rowText(rowFromPanel(panel, NOW), NOW), "22% 41% 3:00");
 });
 
 test("a failing provider with no data: — and the short reason in the title", () => {
@@ -136,4 +136,27 @@ test("pickRow prefers run-log data, then quota data, then the run-log reason", (
   assert.equal(rowText(both, NOW), "—");
   assert.equal(both.reason, "No rate_limit_event in recent Claude run logs; usage API: Rate-limited by Anthropic");
   assert.equal(pickRow(null, null), null);
+});
+
+test("compact reset: H:MM under 24 h, compact days from 24 h", () => {
+  assert.equal(compactDuration(0), "0:00");
+  assert.equal(compactDuration(-MIN), "0:00");
+  assert.equal(compactDuration(5 * MIN), "0:05");
+  assert.equal(compactDuration(4 * MIN + 1), "0:05", "rounds up to the next minute");
+  assert.equal(compactDuration(2 * HOUR + 30 * MIN), "2:30");
+  assert.equal(compactDuration(23 * HOUR + 59 * MIN), "23:59");
+  assert.equal(compactDuration(23 * HOUR + 59 * MIN + 1), "1d", "a value rounded up to 24 h is a day");
+  assert.equal(compactDuration(24 * HOUR), "1d");
+  assert.equal(compactDuration(3 * 24 * HOUR + 4 * HOUR + 59 * MIN), "3d4h");
+  assert.equal(compactDuration(6 * 24 * HOUR), "6d");
+});
+
+test("row text: the board's example, and unknown parts", () => {
+  const row = rowFromSnapshot(CLAUDE, snap(14, NOW + 2 * HOUR + 30 * MIN, 84, NOW + 3 * 24 * HOUR), NOW);
+  assert.equal(rowText(row, NOW), "14% 84% 2:30");
+  assert.doesNotMatch(rowText(row, NOW), /\/|  /);
+  const noReset = rowFromSnapshot(CLAUDE, snap(14, null, 84, null), NOW);
+  assert.equal(rowText(noReset, NOW), "14% 84% —");
+  const fiveHourOnly = rowFromSnapshot(CLAUDE, snap(7, NOW + 5 * MIN, null, null), NOW);
+  assert.equal(rowText(fiveHourOnly, NOW), "7% — 0:05");
 });

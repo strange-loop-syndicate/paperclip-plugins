@@ -103,7 +103,7 @@ export function buildRowViews(
   return { rows, claudeNeedsQuota };
 }
 
-/** Sidebar rows: provider icon + "5h% / weekly% / next reset", one per used provider. */
+/** Sidebar rows: provider icon + "5h% weekly% next-reset", one per used provider. */
 export function UsageLimitsSidebar() {
   const { companyId } = useHostContext();
   const providersData = usePluginData<UsedProvidersData>("used-providers", { companyId: companyId ?? undefined });
