@@ -1,9 +1,15 @@
 # Bang Commands — Paperclip plugin
 
-Write `!<name>` as a task comment. The plugin runs the matching allowlisted
-command and posts exit code, duration and output as a reply on the same task.
+Write `!<command>` as a task comment. The plugin runs it and posts exit code,
+duration and output as a reply on the same task. Only comments by the user ids
+in `ALLOWED_USER_IDS` (`src/commands.ts`, default `local-board`) trigger anything.
 
-## Commands
+- `!<shortcut>` alone → the shortcut below.
+- `!help` → list of shortcuts.
+- Anything else after `!` → runs in `/bin/zsh -lc` in `/Users/claude/work/workspace`,
+  timeout 120 s. Multi-line comments run as one script.
+
+## Shortcuts
 
 | Comment | Runs | Changes anything |
 |---|---|---|
@@ -17,11 +23,10 @@ The list lives in `src/commands.ts`. Edit it, then `npm run build`.
 
 ## Rules
 
-- **Allowlist only.** The whole comment must be `!<name>`. No arguments, no shell.
-  `!<known-name> <more>` gets a "takes no arguments" reply. Unknown `!<name>` gets the list.
-  Prose such as `!important note` is ignored.
-- **User comments only.** Events with `actorType` other than `user`, and comments
-  with an agent author, are ignored. The plugin's own replies are `plugin` events, so no loops.
+- **Allowed users only.** Events with `actorType` other than `user`, comments
+  with an agent author, and users not in `ALLOWED_USER_IDS` are ignored.
+  The plugin's own replies are `plugin` events, so no loops.
+- **Any comment starting with `!` runs.** Do not start ordinary comments with `!`.
 - **Timeout** per command. The process group is killed with SIGKILL.
 - **Output** is truncated to the last 6000 characters.
 - **`!restart-paperclip`** replies "started" first, then runs detached in its own
@@ -31,7 +36,8 @@ The list lives in `src/commands.ts`. Edit it, then `npm run build`.
 ## Known limits
 
 - In `local_trusted` mode any local process can post a comment as the board user.
-  "User only" is a soft check.
+  "Owner only" is a soft check. Commands run as the server's OS user (`claude`),
+  the same user agents already run as, so this adds no OS privilege.
 - Plugin replies do not wake the task's agent. The agent sees the reply on its next wake.
   The `!` comment itself does wake the agent, which may start before the reply exists.
 

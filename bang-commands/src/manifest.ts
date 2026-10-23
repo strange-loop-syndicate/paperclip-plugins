@@ -5,7 +5,7 @@ const manifest: PaperclipPluginManifestV1 = {
   apiVersion: 1,
   version: "0.1.0",
   displayName: "Bang Commands",
-  description: "Run allowlisted shell commands from !name task comments",
+  description: "Run shell commands from owner !command task comments",
   author: "SLS",
   categories: ["automation"],
   capabilities: ["events.subscribe", "issue.comments.read", "issue.comments.create"],

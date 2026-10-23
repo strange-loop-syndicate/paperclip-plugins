@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "private": true,
-  "description": "Run allowlisted shell commands from !name task comments",
+  "description": "Run shell commands from owner !command task comments",
   "scripts": {
     "build": "node ./esbuild.config.mjs",
     "dev": "node ./esbuild.config.mjs --watch",

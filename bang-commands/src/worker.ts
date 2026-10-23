@@ -1,10 +1,11 @@
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
-import { buildCommands, pluginRoot, type BangCommand } from "./commands.js";
+import { ALLOWED_USER_IDS, buildCommands, pluginRoot, type BangCommand } from "./commands.js";
 import { runCommand, startDetached, type RunResult } from "./runner.js";
-import { formatHasArgs, formatResult, formatUnknown, parseComment } from "./handler.js";
+import { formatHelp, formatResult, label, parseComment } from "./handler.js";
 
 export interface WorkerDeps {
   commands: BangCommand[];
+  allowedUserIds: string[];
   run: (cmd: BangCommand) => Promise<RunResult>;
   startDetached: (cmd: BangCommand) => { pid: number | undefined };
 }
@@ -12,6 +13,7 @@ export interface WorkerDeps {
 const root = pluginRoot(import.meta.url);
 const defaultDeps: WorkerDeps = {
   commands: buildCommands(root),
+  allowedUserIds: ALLOWED_USER_IDS,
   run: runCommand,
   startDetached: (cmd) => startDetached(cmd, `${root}/detached-${cmd.name}.log`),
 };
@@ -23,7 +25,7 @@ export function createPlugin(deps: WorkerDeps = defaultDeps) {
   return definePlugin({
     async setup(ctx) {
       ctx.events.on("issue.comment.created", async (event) => {
-        // Users only. Agent comments and this plugin's own replies are ignored.
+        // Allowed users only. Agent comments and this plugin's own replies are ignored.
         if (event.actorType !== "user") return;
         const issueId = event.entityId;
         const payload = (event.payload ?? {}) as { commentId?: string };
@@ -33,6 +35,7 @@ export function createPlugin(deps: WorkerDeps = defaultDeps) {
         const comments = await ctx.issues.listComments(issueId, event.companyId);
         const comment = comments.find((c) => c.id === commentId);
         if (!comment || comment.authorAgentId || !comment.authorUserId) return;
+        if (!deps.allowedUserIds.includes(comment.authorUserId)) return;
 
         const parsed = parseComment(comment.body, deps.commands);
         if (parsed.kind === "none") return;
@@ -40,14 +43,13 @@ export function createPlugin(deps: WorkerDeps = defaultDeps) {
 
         const reply = (body: string) => ctx.issues.createComment(issueId, body, event.companyId);
 
-        if (parsed.kind === "unknown") return void (await reply(formatUnknown(parsed.name, deps.commands)));
-        if (parsed.kind === "has-args") return void (await reply(formatHasArgs(parsed.command, deps.commands)));
+        if (parsed.kind === "help") return void (await reply(formatHelp(deps.commands)));
 
         const cmd = parsed.command;
-        ctx.logger.info("Running bang command", { name: cmd.name, issueId, commentId, actorId: event.actorId });
+        ctx.logger.info("Running bang command", { command: cmd.name, userId: comment.authorUserId, issueId, commentId, actorId: event.actorId });
 
         if (cmd.detached) {
-          await reply(`⏳ **\`!${cmd.name}\`** started. It runs in the background and does not post a result here.`);
+          await reply(`⏳ **${label(cmd)}** started. It runs in the background and does not post a result here.`);
           const { pid } = deps.startDetached(cmd);
           ctx.logger.info("Started detached bang command", { name: cmd.name, pid });
           return;
@@ -59,7 +61,7 @@ export function createPlugin(deps: WorkerDeps = defaultDeps) {
     },
 
     async onHealth() {
-      return { status: "ok", message: `Bang commands: ${defaultDeps.commands.map((c) => c.name).join(", ")}` };
+      return { status: "ok", message: `Shortcuts: ${defaultDeps.commands.map((c) => c.name).join(", ")}; shell for users ${defaultDeps.allowedUserIds.join(", ")}` };
     },
   });
 }

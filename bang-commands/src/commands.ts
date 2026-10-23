@@ -1,10 +1,19 @@
 /**
- * The allowlist. `!<name>` in a task comment runs exactly one entry below.
- * Comment text is never passed to the command: no arguments, no shell.
- * Edit this file to add or remove commands, then run `npm run build`.
+ * Config. `!<text>` from an allowed user runs `<text>` in a shell, except that
+ * a bare `!<name>` matching a shortcut below runs that shortcut instead.
+ * Edit this file, then run `npm run build`.
  */
 
+/** Only comments by these Paperclip user ids trigger anything. */
+export const ALLOWED_USER_IDS = ["local-board"];
+
+/** Shell for free-text commands. Login shell, so PATH matches a terminal. */
+export const SHELL = ["/bin/zsh", "-lc"];
+export const SHELL_CWD = "/Users/claude/work/workspace";
+export const SHELL_TIMEOUT_MS = 120_000;
+
 export interface BangCommand {
+  /** Shortcut name; for free-text shell commands, the command text. */
   name: string;
   description: string;
   /** argv; argv[0] is the executable. Runs without a shell. */
@@ -62,4 +71,15 @@ export function buildCommands(root: string): BangCommand[] {
       detached: true,
     },
   ];
+}
+
+/** A free-text shell command from a comment. */
+export function shellCommand(script: string): BangCommand {
+  return {
+    name: script,
+    description: "shell",
+    argv: [...SHELL, script],
+    cwd: SHELL_CWD,
+    timeoutMs: SHELL_TIMEOUT_MS,
+  };
 }

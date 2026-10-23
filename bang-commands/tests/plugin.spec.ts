@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import manifest from "../src/manifest.js";
 import { createPlugin, type WorkerDeps } from "../src/worker.js";
-import { fence, parseComment, truncate } from "../src/handler.js";
+import { fence, label, parseComment, truncate } from "../src/handler.js";
 import { runCommand } from "../src/runner.js";
 import type { BangCommand } from "../src/commands.js";
 
@@ -16,11 +16,14 @@ const commands: BangCommand[] = [
 
 function setup() {
   const ran: string[] = [];
+  const argvs: string[][] = [];
   const detached: string[] = [];
   const deps: WorkerDeps = {
     commands,
+    allowedUserIds: ["owner"],
     run: async (cmd) => {
       ran.push(cmd.name);
+      argvs.push(cmd.argv);
       return { exitCode: 0, signal: null, timedOut: false, durationMs: 12, output: "ok\n" };
     },
     startDetached: (cmd) => {
@@ -31,7 +34,7 @@ function setup() {
   const harness = createTestHarness({ manifest });
   harness.seed({ issues: [{ id: ISSUE, companyId: COMPANY, status: "in_progress", title: "t" } as never] });
   const plugin = createPlugin(deps);
-  return { harness, plugin, ran, detached };
+  return { harness, plugin, ran, argvs, detached };
 }
 
 async function comment(
@@ -75,7 +78,7 @@ describe("bang commands", () => {
   it("runs an allowlisted command for a user comment and replies", async () => {
     const h = setup();
     await h.plugin.definition.setup(h.harness.ctx);
-    await comment(h, "c1", "  !status \n", { user: "local-board" });
+    await comment(h, "c1", "  !status \n", { user: "owner" });
     expect(h.ran).toEqual(["status"]);
     const r = await replies(h);
     expect(r).toHaveLength(1);
@@ -102,36 +105,45 @@ describe("bang commands", () => {
   it("handles each comment once", async () => {
     const h = setup();
     await h.plugin.definition.setup(h.harness.ctx);
-    await comment(h, "c1", "!status", { user: "u" });
+    await comment(h, "c1", "!status", { user: "owner" });
     await h.harness.emit("issue.comment.created", { commentId: "c1" }, { entityId: ISSUE, companyId: COMPANY, actorType: "user" });
     expect(h.ran).toEqual(["status"]);
   });
 
-  it("replies with the allowed list for an unknown name and runs nothing", async () => {
+  it("runs any other text in a shell", async () => {
     const h = setup();
     await h.plugin.definition.setup(h.harness.ctx);
-    await comment(h, "c1", "!rm-rf", { user: "u" });
+    await comment(h, "c1", "!ls -la | head -3", { user: "owner" });
+    await comment(h, "c2", "!status; rm -rf /tmp/x", { user: "owner" });
+    expect(h.ran).toEqual(["ls -la | head -3", "status; rm -rf /tmp/x"]);
+    expect(h.argvs[0]).toEqual(["/bin/zsh", "-lc", "ls -la | head -3"]);
+    expect((await replies(h))[0]).toContain("`!ls -la | head -3`");
+  });
+
+  it("ignores users not on the allowed list", async () => {
+    const h = setup();
+    await h.plugin.definition.setup(h.harness.ctx);
+    await comment(h, "c1", "!status", { user: "someone-else" });
+    await comment(h, "c2", "!id", { user: "someone-else" });
+    expect(h.ran).toEqual([]);
+    expect(await replies(h)).toEqual([]);
+  });
+
+  it("replies to !help with the shortcuts and runs nothing", async () => {
+    const h = setup();
+    await h.plugin.definition.setup(h.harness.ctx);
+    await comment(h, "c1", "!help", { user: "owner" });
     expect(h.ran).toEqual([]);
     const [r] = await replies(h);
-    expect(r).toContain("Unknown command `!rm-rf`");
     expect(r).toContain("`!status`");
-    expect(r).toContain("`!restart`");
+    expect(r).toContain("runs in a shell");
   });
 
-  it("refuses arguments", async () => {
+  it("ignores comments that do not start with !", async () => {
     const h = setup();
     await h.plugin.definition.setup(h.harness.ctx);
-    await comment(h, "c1", "!status; rm -rf /", { user: "u" });
-    expect(h.ran).toEqual([]);
-    const [r] = await replies(h);
-    expect(r).toContain("takes no arguments");
-  });
-
-  it("ignores prose that starts with !", async () => {
-    const h = setup();
-    await h.plugin.definition.setup(h.harness.ctx);
-    await comment(h, "c1", "!important please read", { user: "u" });
-    await comment(h, "c2", "hello !status", { user: "u" });
+    await comment(h, "c1", "hello !status", { user: "owner" });
+    await comment(h, "c2", "!", { user: "owner" });
     expect(h.ran).toEqual([]);
     expect(await replies(h)).toEqual([]);
   });
@@ -139,7 +151,7 @@ describe("bang commands", () => {
   it("replies first, then starts detached commands", async () => {
     const h = setup();
     await h.plugin.definition.setup(h.harness.ctx);
-    await comment(h, "c1", "!restart", { user: "u" });
+    await comment(h, "c1", "!restart", { user: "owner" });
     expect(h.detached).toEqual(["restart"]);
     expect(h.ran).toEqual([]);
     expect((await replies(h))[0]).toContain("started");
@@ -147,14 +159,26 @@ describe("bang commands", () => {
 });
 
 describe("parse and format", () => {
-  it("parses only whole-comment commands", () => {
-    expect(parseComment("!status", commands).kind).toBe("run");
-    expect(parseComment("!STATUS", commands).kind).toBe("run");
-    expect(parseComment("!nope", commands).kind).toBe("unknown");
-    expect(parseComment("!status now", commands).kind).toBe("has-args");
-    expect(parseComment("!status\n!restart", commands).kind).toBe("has-args");
-    expect(parseComment("status", commands).kind).toBe("none");
-    expect(parseComment("!$(id)", commands).kind).toBe("none");
+  it("parses shortcuts, help and shell text", () => {
+    const run = (t: string) => {
+      const p = parseComment(t, commands);
+      return p.kind === "run" ? p.command : p.kind;
+    };
+    expect(run("!status")).toBe(commands[0]);
+    expect(run("!STATUS")).toBe(commands[0]);
+    expect(run("! status ")).toBe(commands[0]);
+    expect(run("!help")).toBe("help");
+    expect(run("status")).toBe("none");
+    expect(run("!")).toBe("none");
+    expect((run("!status now") as BangCommand).argv).toEqual(["/bin/zsh", "-lc", "status now"]);
+    expect((run("!echo a\necho b") as BangCommand).argv[2]).toBe("echo a\necho b");
+  });
+
+  it("labels long and multi-line shell commands", () => {
+    const cmd = (name: string) => ({ ...commands[0], name });
+    expect(label(cmd("echo a\necho b"))).toBe("`!echo a …`");
+    expect(label(cmd("x".repeat(100)))).toContain("…");
+    expect(label(cmd("echo `id`"))).toBe("`` !echo `id` ``");
   });
 
   it("keeps the tail when truncating", () => {
