@@ -4,7 +4,7 @@ import { BASE_INTERVAL_MS, retryAt, type FetchDecision } from "../cache.ts";
 import {
   buildPanels,
   compactItem,
-  formatClock,
+  formatAsOf,
   formatDuration,
   tooltipText,
   type CompactItem,
@@ -290,12 +290,12 @@ function WindowLine({ row, stale }: { row: WindowRow; stale: boolean }) {
 function ProviderStatus({ panel }: { panel: ProviderPanel }) {
   const full = panel.errorDetail ?? undefined;
   if (panel.state === "ok" && panel.asOf !== null) {
-    return <span style={{ ...styles.status, ...styles.muted }}>as of {formatClock(panel.asOf)}</span>;
+    return <span style={{ ...styles.status, ...styles.muted }}>as of {formatAsOf(panel.asOf, new Date())}</span>;
   }
   if (panel.state === "stale") {
     return (
       <span style={{ ...styles.status, color: STALE_COLOR }} title={full}>
-        stale · as of {panel.asOf !== null ? formatClock(panel.asOf) : "?"} — {panel.message}
+        stale · as of {panel.asOf !== null ? formatAsOf(panel.asOf, new Date()) : "?"} — {panel.message}
       </span>
     );
   }

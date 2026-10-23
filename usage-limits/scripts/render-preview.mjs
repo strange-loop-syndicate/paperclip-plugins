@@ -1,5 +1,5 @@
 // Render the sidebar line to static HTML with fixture data (no host needed).
-// Covers the ok, stale and rate-limited states, collapsed and expanded. Writes evidence/preview.html.
+// Covers the ok, stale (incl. a reset window) and rate-limited states, collapsed and expanded. Writes evidence/preview.html.
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -28,6 +28,11 @@ const codexOk = { provider: "openai", ok: true, windows: [
 const claude429 = { provider: "anthropic", ok: false, windows: [],
   error: "Claude subscription session found, but quota polling failed (Anthropic OAuth usage: anthropic usage api returned 429; Claude CLI /usage: claude exited with code 1)" };
 const lastGood = { anthropic: { windows: claudeOk.windows, fetchedAt: now.getTime() - 25 * MIN } };
+// Older data whose session window has reset since: the old 95% must not show.
+const lastGoodReset = { anthropic: { fetchedAt: now.getTime() - 240 * MIN, windows: [
+  { label: "Current session", usedPercent: 95, resetsAt: "2026-10-23T10:00:00.000Z", valueLabel: null },
+  { label: "Current week (all models)", usedPercent: 41, resetsAt: "2026-10-27T09:00:00.000Z", valueLabel: null },
+] } };
 const retry = now.getTime() + 10 * MIN;
 
 function panelsView(results, extra = {}) {
@@ -38,7 +43,8 @@ function panelsView(results, extra = {}) {
 const cases = [
   ["OK", panelsView([claudeOk, codexOk])],
   ["Stale: Claude 429, older data kept", panelsView([claude429, codexOk], { lastGood, retryAt: retry })],
-  ["Rate-limited: Claude 429, no older data", panelsView([claude429, codexOk], { retryAt: retry })],
+  ["Stale: session window reset since the older data", panelsView([claude429, codexOk], { lastGood: lastGoodReset, retryAt: retry })],
+  ["Rate-limited: Claude 429, no older data",panelsView([claude429, codexOk], { retryAt: retry })],
 ];
 const nav = (label) => '<div class="nav-item">' + label + '</div>';
 const render = (view, expanded) => renderToStaticMarkup(createElement(UsageLimitsView, {

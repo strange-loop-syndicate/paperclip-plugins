@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   buildPanels,
   compactItem,
+  formatAsOf,
   formatClock,
   formatDuration,
   formatResetIn,
@@ -294,6 +295,72 @@ test("compactItem picks the highest-used window and tags stale / rate-limited st
   assert.deepEqual([item.percent, item.severity, item.state, item.tag], [95, "critical", "stale", "stale"]);
 });
 
+test("stale: a window that reset since the data was fetched drops its old percent", () => {
+  // Reviewer's case: last good 5h 95% resetting 12:00; Anthropic still 429 at 15:00.
+  const at1500 = new Date("2026-10-23T15:00:00.000Z");
+  const failing = input([{ provider: "anthropic", ok: false, error: CLAUDE_429, windows: [] }], {
+    retryAt: at1500.getTime() + 600_000,
+  });
+  const lastGood = {
+    anthropic: {
+      windows: [
+        { label: "5h limit", usedPercent: 95, resetsAt: "2026-10-23T12:00:00.000Z", valueLabel: null },
+        { label: "Current week (all models)", usedPercent: 40, resetsAt: "2026-10-29T12:00:00.000Z", valueLabel: null },
+      ],
+      fetchedAt: NOW.getTime() - 3_600_000,
+    },
+  };
+  const [claude] = buildPanels([CLAUDE], { ...failing, lastGood }, at1500);
+  assert.deepEqual(
+    claude.windows.map((w) => [w.label, w.usedPercent, w.severity, w.valueLabel, w.resetIn]),
+    [
+      ["5h limit", null, "unknown", "reset", null],
+      ["Current week (all models)", 40, "ok", null, "in 5d 21h"],
+    ],
+  );
+  const item = compactItem(claude, failing, at1500);
+  assert.deepEqual([item.percent, item.severity, item.tag], [40, "ok", "stale"], "max skips the reset window");
+  const text = tooltipText([claude], at1500);
+  assert.match(text, /5h limit: reset\n/);
+  assert.doesNotMatch(text, /95%/);
+});
+
+test("stale: when every window has reset the line shows no percent", () => {
+  const at1500 = new Date("2026-10-23T15:00:00.000Z");
+  const failing = input([{ provider: "anthropic", ok: false, error: CLAUDE_429, windows: [] }]);
+  const lastGood = {
+    anthropic: {
+      windows: [
+        { label: "5h limit", usedPercent: 95, resetsAt: "2026-10-23T12:00:00.000Z", valueLabel: null },
+        { label: "Exactly now", usedPercent: 91, resetsAt: "2026-10-23T15:00:00.000Z", valueLabel: null },
+      ],
+      fetchedAt: NOW.getTime() - 3_600_000,
+    },
+  };
+  const [claude] = buildPanels([CLAUDE], { ...failing, lastGood }, at1500);
+  assert.equal(claude.state, "stale");
+  assert.deepEqual(claude.windows.map((w) => w.usedPercent), [null, null], "a reset at exactly now counts as reset");
+  const item = compactItem(claude, failing, at1500);
+  assert.deepEqual([item.percent, item.severity, item.state, item.tag], [null, "unknown", "stale", "stale"]);
+});
+
+test("ok data is never marked reset, even with a past resetsAt", () => {
+  const results: ProviderQuotaResult[] = [
+    { provider: "anthropic", ok: true, windows: [{ label: "5h limit", usedPercent: 95, resetsAt: "2026-10-23T11:00:00.000Z", valueLabel: null }] },
+  ];
+  const [claude] = buildPanels([CLAUDE], input(results), NOW);
+  assert.equal(claude.windows[0].usedPercent, 95);
+});
+
+test("formatAsOf adds the date only when the data is from an earlier day", () => {
+  const now = new Date(2026, 9, 23, 15, 0);
+  assert.equal(formatAsOf(new Date(2026, 9, 23, 13, 0).getTime(), now), "13:00");
+  assert.equal(formatAsOf(new Date(2026, 9, 22, 13, 0).getTime(), now), "10/22 13:00");
+  const lastGood = { anthropic: { windows: [{ label: "Current session", usedPercent: 10, resetsAt: null, valueLabel: null }], fetchedAt: new Date(2026, 9, 22, 13, 0).getTime() } };
+  const panels = buildPanels([CLAUDE], input([{ provider: "anthropic", ok: false, error: CLAUDE_429, windows: [] }], { lastGood }), now);
+  assert.match(tooltipText(panels, now), /^Claude \(stale, as of 10\/22 13:00\)/);
+});
+
 test("tooltipText lists every window with resets, the stale marker and the full error", () => {
   const asOf = new Date(2026, 9, 23, 14, 5).getTime();
   const lastGood = {
@@ -304,7 +371,7 @@ test("tooltipText lists every window with resets, the stale marker and the full 
     input([{ provider: "anthropic", ok: false, error: CLAUDE_429, windows: [] }], { lastGood, retryAt: NOW.getTime() + 600_000 }),
     NOW,
   );
-  const text = tooltipText(panels);
+  const text = tooltipText(panels, new Date(asOf + 60_000));
   assert.match(text, /^Claude \(stale, as of 14:05\)/);
   assert.match(text, /Current session: 82% · resets in 2h 00m/);
   assert.match(text, /Rate-limited by Anthropic, retrying in 10m/);

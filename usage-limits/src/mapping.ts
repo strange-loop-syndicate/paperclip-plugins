@@ -150,6 +150,14 @@ export function formatClock(ms: number): string {
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
+/** "HH:MM" for today, "M/D HH:MM" for an older day, so old stale data does not read as today's. */
+export function formatAsOf(ms: number, now: Date): string {
+  const d = new Date(ms);
+  const sameDay =
+    d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  return sameDay ? formatClock(ms) : `${d.getMonth() + 1}/${d.getDate()} ${formatClock(ms)}`;
+}
+
 /**
  * Fix a window label that its own reset time contradicts.
  *
@@ -222,6 +230,16 @@ function splitRows(windows: ReadonlyArray<QuotaWindow>, now: Date): Pick<Provide
   return { windows: rows.filter((r) => !tooltipOnly.includes(r)), tooltipOnly };
 }
 
+/**
+ * A stale row whose window has reset since the data was fetched: its old
+ * percent is known to be wrong, so it shows "reset" with no percent instead.
+ */
+export function markIfReset(row: WindowRow, now: Date): WindowRow {
+  const resetMs = row.resetsAt ? Date.parse(row.resetsAt) : Number.NaN;
+  if (Number.isNaN(resetMs) || resetMs > now.getTime()) return row;
+  return { ...row, usedPercent: null, severity: "unknown", valueLabel: "reset", resetIn: null };
+}
+
 /** The provider entry to use when the server returns more than one: an ok one first. */
 export function pickResult(
   results: ReadonlyArray<ProviderQuotaResult>,
@@ -265,7 +283,16 @@ export function buildPanels(used: ReadonlyArray<ProviderInfo>, input: PanelInput
 
     const good = input.lastGood[info.slug];
     if (good && good.windows.length > 0) {
-      return { ...base, ...splitRows(good.windows, now), state: "stale", message, errorDetail, asOf: good.fetchedAt };
+      const rows = splitRows(good.windows, now);
+      return {
+        ...base,
+        windows: rows.windows.map((r) => markIfReset(r, now)),
+        tooltipOnly: rows.tooltipOnly.map((r) => markIfReset(r, now)),
+        state: "stale",
+        message,
+        errorDetail,
+        asOf: good.fetchedAt,
+      };
     }
     return { ...base, state: "unavailable", message, errorDetail, asOf: null, windows: [] };
   });
@@ -312,11 +339,11 @@ function rowLine(row: WindowRow): string {
 }
 
 /** Multi-line tooltip: every window with reset times, stale markers and full errors. */
-export function tooltipText(panels: ReadonlyArray<ProviderPanel>): string {
+export function tooltipText(panels: ReadonlyArray<ProviderPanel>, now: Date = new Date()): string {
   const blocks = panels.map((p) => {
     const head = [p.label];
-    if (p.state === "stale" && p.asOf !== null) head.push(`(stale, as of ${formatClock(p.asOf)})`);
-    else if (p.state === "ok" && p.asOf !== null) head.push(`(as of ${formatClock(p.asOf)})`);
+    if (p.state === "stale" && p.asOf !== null) head.push(`(stale, as of ${formatAsOf(p.asOf, now)})`);
+    else if (p.state === "ok" && p.asOf !== null) head.push(`(as of ${formatAsOf(p.asOf, now)})`);
     const lines = [head.join(" ")];
     for (const row of [...p.windows, ...p.tooltipOnly]) lines.push(rowLine(row));
     if (p.state === "empty" && p.message) lines.push(`  ${p.message}`);

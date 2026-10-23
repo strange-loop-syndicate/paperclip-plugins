@@ -10,50 +10,54 @@
 > paperclip-limits-plugin@0.2.0 test
 > node --test test/*.test.ts
 
-✔ backoff: 5 min normally, doubling to a 30 min cap after failures (0.960958ms)
-✔ first load fetches; then nothing until 5 min have passed, across tabs (0.358167ms)
-✔ a running fetch in another tab blocks both automatic and manual fetches (2.457125ms)
-✔ a tab closed mid-fetch does not block the others for longer than the in-flight TTL + gap (0.087667ms)
-✔ a 429 on a used provider backs off 10, 20, 30, 30 min and keeps the last good windows (0.161875ms)
-✔ a failing provider that no agent uses does not cause a backoff (0.062709ms)
-✔ a missing used provider counts as a failure (0.105708ms)
-✔ a failed request keeps last good data and backs off (0.172875ms)
-✔ manual refresh ignores the backoff but obeys the 60 s minimum gap (0.126458ms)
-✔ a far-future timestamp (clock change, bad data) cannot block fetching (0.153166ms)
-✔ parseCache round-trips a stored entry and rejects foreign or broken values (0.22375ms)
-✔ usedProviders keeps only claude_local/codex_local, skips terminated, stable order (3.8415ms)
-✔ usedProviders ignores a provider whose only agent is terminated (0.121209ms)
-✔ formatResetIn covers minutes, hours, days, past and invalid (0.121167ms)
-✔ normalizePercent clamps and rounds; severity thresholds (0.075ms)
-✔ buildPanels maps ok windows per used provider only (0.387458ms)
-✔ buildPanels marks provider errors and missing providers unavailable (0.30725ms)
-✔ buildPanels falls back to errorFamily, then a generic message (0.256ms)
-✔ buildPanels prefers an ok result over a failed duplicate (0.087125ms)
-✔ buildPanels shows empty state when ok but no windows (e.g. bedrock) (0.073667ms)
-✔ buildPanels: a failed request with no older data is unavailable, full text kept for the tooltip (0.134584ms)
-✔ credit-style window without a percent keeps its value label (0.113709ms)
-✔ buildPanels keeps last good windows as stale when the provider now fails (0.125583ms)
-✔ buildPanels keeps last good windows as stale when the whole request fails (0.066542ms)
-✔ shortError: rate limit, timeout, auth, generic; retry hint only while waiting (0.058834ms)
-✔ relabelWindow: a 5h label that resets days away becomes Weekly limit (0.092125ms)
-✔ relabelWindow leaves consistent, unknown and non-5h labels alone (0.06225ms)
-✔ toWindowRow applies the relabel (0.054292ms)
-✔ a $0 credits row next to percent windows moves to the tooltip (2.431959ms)
-✔ isZeroCreditRow keeps real balances and credits-only accounts visible (0.369916ms)
-✔ compactItem picks the highest-used window and tags stale / rate-limited states (0.211625ms)
-✔ tooltipText lists every window with resets, the stale marker and the full error (0.309459ms)
-✔ formatDuration and formatClock (0.050208ms)
-✔ used-providers returns the providers of this company's agents (1.090917ms)
-✔ used-providers returns nothing without a companyId (0.12625ms)
-✔ used-providers needs the agents.read capability (0.197209ms)
-ℹ tests 36
+✔ backoff: 5 min normally, doubling to a 30 min cap after failures (0.756583ms)
+✔ first load fetches; then nothing until 5 min have passed, across tabs (0.197584ms)
+✔ a running fetch in another tab blocks both automatic and manual fetches (0.121625ms)
+✔ a tab closed mid-fetch does not block the others for longer than the in-flight TTL + gap (0.077875ms)
+✔ a 429 on a used provider backs off 10, 20, 30, 30 min and keeps the last good windows (0.15825ms)
+✔ a failing provider that no agent uses does not cause a backoff (0.071833ms)
+✔ a missing used provider counts as a failure (0.052541ms)
+✔ a failed request keeps last good data and backs off (0.092041ms)
+✔ manual refresh ignores the backoff but obeys the 60 s minimum gap (0.097208ms)
+✔ a far-future timestamp (clock change, bad data) cannot block fetching (0.135ms)
+✔ parseCache round-trips a stored entry and rejects foreign or broken values (0.211ms)
+✔ usedProviders keeps only claude_local/codex_local, skips terminated, stable order (1.255166ms)
+✔ usedProviders ignores a provider whose only agent is terminated (0.083708ms)
+✔ formatResetIn covers minutes, hours, days, past and invalid (0.109084ms)
+✔ normalizePercent clamps and rounds; severity thresholds (0.077917ms)
+✔ buildPanels maps ok windows per used provider only (0.345917ms)
+✔ buildPanels marks provider errors and missing providers unavailable (0.358125ms)
+✔ buildPanels falls back to errorFamily, then a generic message (0.197667ms)
+✔ buildPanels prefers an ok result over a failed duplicate (0.075875ms)
+✔ buildPanels shows empty state when ok but no windows (e.g. bedrock) (0.074ms)
+✔ buildPanels: a failed request with no older data is unavailable, full text kept for the tooltip (0.147833ms)
+✔ credit-style window without a percent keeps its value label (0.106416ms)
+✔ buildPanels keeps last good windows as stale when the provider now fails (0.166459ms)
+✔ buildPanels keeps last good windows as stale when the whole request fails (0.070709ms)
+✔ shortError: rate limit, timeout, auth, generic; retry hint only while waiting (0.050833ms)
+✔ relabelWindow: a 5h label that resets days away becomes Weekly limit (0.090375ms)
+✔ relabelWindow leaves consistent, unknown and non-5h labels alone (0.076917ms)
+✔ toWindowRow applies the relabel (0.072541ms)
+✔ a $0 credits row next to percent windows moves to the tooltip (0.892833ms)
+✔ isZeroCreditRow keeps real balances and credits-only accounts visible (0.075208ms)
+✔ compactItem picks the highest-used window and tags stale / rate-limited states (0.135917ms)
+✔ stale: a window that reset since the data was fetched drops its old percent (0.098375ms)
+✔ stale: when every window has reset the line shows no percent (0.05725ms)
+✔ ok data is never marked reset, even with a past resetsAt (0.031709ms)
+✔ formatAsOf adds the date only when the data is from an earlier day (0.068625ms)
+✔ tooltipText lists every window with resets, the stale marker and the full error (0.093291ms)
+✔ formatDuration and formatClock (0.027625ms)
+✔ used-providers returns the providers of this company's agents (1.252709ms)
+✔ used-providers returns nothing without a companyId (0.128791ms)
+✔ used-providers needs the agents.read capability (0.189291ms)
+ℹ tests 40
 ℹ suites 0
-ℹ pass 36
+ℹ pass 40
 ℹ fail 0
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 429.3675
+ℹ duration_ms 321.586458
 
 > paperclip-limits-plugin@0.2.0 build
 > node ./build.mjs
