@@ -1,0 +1,44 @@
+
+> paperclip-limits-plugin@0.1.0 check
+> npm run typecheck && npm test && npm run build && npm run validate
+
+
+> paperclip-limits-plugin@0.1.0 typecheck
+> tsc --noEmit
+
+
+> paperclip-limits-plugin@0.1.0 test
+> node --test test/*.test.ts
+
+✔ usedProviders keeps only claude_local/codex_local, skips terminated, stable order (0.756166ms)
+✔ usedProviders ignores a provider whose only agent is terminated (0.073958ms)
+✔ formatResetIn covers minutes, hours, days, past and invalid (0.091916ms)
+✔ normalizePercent clamps and rounds; severity thresholds (0.070541ms)
+✔ buildPanels maps ok windows per used provider only (0.174625ms)
+✔ buildPanels marks provider errors and missing providers unavailable (0.107917ms)
+✔ buildPanels falls back to errorFamily, then a generic message (0.17025ms)
+✔ buildPanels prefers an ok result over a failed duplicate (0.075583ms)
+✔ buildPanels shows empty state when ok but no windows (e.g. bedrock) (0.104458ms)
+✔ buildPanels marks every provider unavailable on a fetch error, shortened (0.151333ms)
+✔ credit-style window without a percent keeps its value label (0.064333ms)
+✔ used-providers returns the providers of this company's agents (1.189709ms)
+✔ used-providers returns nothing without a companyId (0.11875ms)
+✔ used-providers needs the agents.read capability (0.198375ms)
+ℹ tests 14
+ℹ suites 0
+ℹ pass 14
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 342.493542
+
+> paperclip-limits-plugin@0.1.0 build
+> node ./build.mjs
+
+built dist/manifest.js, dist/worker.js, dist/ui/index.js
+
+> paperclip-limits-plugin@0.1.0 validate
+> node scripts/validate-manifest.mjs
+
+manifest valid: lab.usage-limits@0.1.0 capabilities=agents.read,ui.sidebar.register

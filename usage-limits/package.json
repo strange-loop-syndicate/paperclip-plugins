@@ -1,0 +1,32 @@
+{
+  "name": "paperclip-limits-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Paperclip plugin: Claude/Codex subscription usage limits in the sidebar",
+  "type": "module",
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/worker.js",
+    "ui": "./dist/ui/"
+  },
+  "scripts": {
+    "build": "node ./build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/*.test.ts",
+    "validate": "node scripts/validate-manifest.mjs",
+    "preview": "node scripts/render-preview.mjs",
+    "check": "npm run typecheck && npm test && npm run build && npm run validate"
+  },
+  "devDependencies": {
+    "@paperclipai/plugin-sdk": "2026.1012.0",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.18",
+    "esbuild": "^0.28.2",
+    "react": "^19.2.0",
+    "react-dom": "^19.3.1",
+    "typescript": "^7.0.2"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}
