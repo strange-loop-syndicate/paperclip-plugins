@@ -38,8 +38,32 @@ The list lives in `src/commands.ts`. Edit it, then `npm run build`.
 - In `local_trusted` mode any local process can post a comment as the board user.
   "Owner only" is a soft check. Commands run as the server's OS user (`claude`),
   the same user agents already run as, so this adds no OS privilege.
-- Plugin replies do not wake the task's agent. The agent sees the reply on its next wake.
-  The `!` comment itself does wake the agent, which may start before the reply exists.
+- Unpatched Paperclip wakes the task's agent on the `!` comment itself, about 30 ms
+  later. The agent then starts before the reply exists, and the reply arrives as a
+  queued "interrupt" message. See "Agent wake order" below.
+
+## Agent wake order
+
+Paperclip wakes the assignee inside the comment request, before any plugin sees the
+comment. A plugin cannot stop that wake. Two parts fix the order:
+
+1. **Server patch** — `scripts/patch-paperclip-server.mjs` edits the installed
+   `@paperclipai/server/dist/routes/issues.js`: a user comment that starts with `!`
+   wakes no agent. It touches only the two comment-wake guards.
+2. **Plugin wake** — after it posts the reply, the plugin calls `issues.requestWakeup`
+   (reason `bang_command_result`). The agent starts with the output already in the thread.
+   `!help` and detached shortcuts wake nobody.
+
+```sh
+node scripts/patch-paperclip-server.mjs --check   # exit 0 = patched
+node scripts/patch-paperclip-server.mjs           # apply, then restart Paperclip
+node scripts/patch-paperclip-server.mjs --revert  # restore the backup, then restart
+```
+
+- **Re-run after every Paperclip update.** `npm` replaces `node_modules` and drops the patch.
+  If Paperclip changed the code, the script stops with "expected 1 match" and changes nothing.
+- **Plugin off = `!` comments wake nobody** while the patch is in place.
+- **The patch applies to every user's `!` comment**, not only `ALLOWED_USER_IDS`.
 
 ## Develop
 

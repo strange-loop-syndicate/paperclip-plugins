@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import manifest from "../src/manifest.js";
 import { createPlugin, type WorkerDeps } from "../src/worker.js";
@@ -34,7 +34,8 @@ function setup() {
   const harness = createTestHarness({ manifest });
   harness.seed({ issues: [{ id: ISSUE, companyId: COMPANY, status: "in_progress", title: "t" } as never] });
   const plugin = createPlugin(deps);
-  return { harness, plugin, ran, argvs, detached };
+  const wakes = vi.spyOn(harness.ctx.issues, "requestWakeup");
+  return { harness, plugin, ran, argvs, detached, wakes };
 }
 
 async function comment(
@@ -72,7 +73,7 @@ async function replies(h: ReturnType<typeof setup>) {
 
 describe("bang commands", () => {
   it("declares only the capabilities it uses", () => {
-    expect(manifest.capabilities).toEqual(["events.subscribe", "issue.comments.read", "issue.comments.create"]);
+    expect(manifest.capabilities).toEqual(["events.subscribe", "issue.comments.read", "issue.comments.create", "issues.wakeup"]);
   });
 
   it("runs an allowlisted command for a user comment and replies", async () => {
@@ -155,6 +156,41 @@ describe("bang commands", () => {
     expect(h.detached).toEqual(["restart"]);
     expect(h.ran).toEqual([]);
     expect((await replies(h))[0]).toContain("started");
+  });
+});
+
+describe("waking the assignee", () => {
+  it("wakes the assignee once, after the reply is posted", async () => {
+    const h = setup();
+    h.harness.seed({ issues: [{ id: ISSUE, companyId: COMPANY, status: "in_progress", title: "t", assigneeAgentId: "agent_1" } as never] });
+    await h.plugin.definition.setup(h.harness.ctx);
+    let repliesAtWake: string[] = [];
+    h.wakes.mockImplementation(async () => {
+      repliesAtWake = await replies(h);
+      return { queued: true, runId: "run_1" };
+    });
+    await comment(h, "c1", "!status", { user: "owner" });
+    expect(h.wakes).toHaveBeenCalledTimes(1);
+    expect(h.wakes).toHaveBeenCalledWith(ISSUE, COMPANY, { reason: "bang_command_result", idempotencyKey: "bang-commands:c1" });
+    expect(repliesAtWake).toHaveLength(1);
+  });
+
+  it("still replies when there is no assignee to wake", async () => {
+    const h = setup();
+    await h.plugin.definition.setup(h.harness.ctx);
+    await comment(h, "c1", "!status", { user: "owner" });
+    expect(h.wakes).toHaveBeenCalledTimes(1);
+    expect(await replies(h)).toHaveLength(1);
+  });
+
+  it("does not wake for !help, detached commands or ignored comments", async () => {
+    const h = setup();
+    await h.plugin.definition.setup(h.harness.ctx);
+    await comment(h, "c1", "!help", { user: "owner" });
+    await comment(h, "c2", "!restart", { user: "owner" });
+    await comment(h, "c3", "!status", { agent: "agent_1" });
+    await comment(h, "c4", "hello", { user: "owner" });
+    expect(h.wakes).not.toHaveBeenCalled();
   });
 });
 

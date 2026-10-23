@@ -57,6 +57,19 @@ export function createPlugin(deps: WorkerDeps = defaultDeps) {
 
         const result = await deps.run(cmd);
         await reply(formatResult(cmd, result));
+
+        // The patched server does not wake the assignee on a `!` comment
+        // (scripts/patch-paperclip-server.mjs). Wake it now, with the output posted.
+        try {
+          const wake = await ctx.issues.requestWakeup(issueId, event.companyId, {
+            reason: "bang_command_result",
+            idempotencyKey: `bang-commands:${commentId}`,
+          });
+          ctx.logger.info("Woke assignee after bang command", { issueId, commentId, runId: wake.runId });
+        } catch (err) {
+          // No assignee, closed, blocked or over budget: nothing to wake.
+          ctx.logger.info("Did not wake assignee after bang command", { issueId, commentId, reason: String(err) });
+        }
       });
     },
 
