@@ -95,6 +95,22 @@ export const WARN_PERCENT = 75;
 export const CRITICAL_PERCENT = 90;
 
 /**
+ * IDs of non-terminated agents per provider slug, e.g. the `claude_local`
+ * agents whose run logs carry Claude's limits.
+ */
+export function agentIdsByProvider(
+  agents: ReadonlyArray<{ id?: string | null; adapterType?: string | null; status?: string | null }>,
+): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const agent of agents) {
+    if (agent.status === "terminated" || !agent.id) continue;
+    const info = agent.adapterType ? ADAPTER_PROVIDERS[agent.adapterType] : undefined;
+    if (info) (out[info.slug] ??= []).push(agent.id);
+  }
+  return out;
+}
+
+/**
  * Providers used by at least one non-terminated agent, in a stable order.
  * Agents on adapters without quota windows are ignored.
  */
@@ -296,60 +312,4 @@ export function buildPanels(used: ReadonlyArray<ProviderInfo>, input: PanelInput
     }
     return { ...base, state: "unavailable", message, errorDetail, asOf: null, windows: [] };
   });
-}
-
-/** One provider in the compact sidebar line, e.g. "Claude 82%". */
-export interface CompactItem {
-  slug: string;
-  label: string;
-  /** Highest used % across the provider's windows; null when none is known. */
-  percent: number | null;
-  severity: Severity;
-  state: PanelState;
-  /** Small marker after the value: "stale", "retry 10m", "n/a"; null when fresh. */
-  tag: string | null;
-}
-
-export function compactItem(panel: ProviderPanel, input: Pick<PanelInput, "retryAt">, now: Date): CompactItem {
-  const percents = panel.windows.map((w) => w.usedPercent).filter((p): p is number => p !== null);
-  const percent = percents.length > 0 ? Math.max(...percents) : null;
-  let tag: string | null = null;
-  if (panel.state === "stale") tag = "stale";
-  else if (panel.state === "unavailable") {
-    tag =
-      input.retryAt !== null && input.retryAt > now.getTime()
-        ? `retry ${formatDuration(input.retryAt - now.getTime())}`
-        : "n/a";
-  }
-  return { slug: panel.slug, label: panel.label, percent, severity: severityFor(percent), state: panel.state, tag };
-}
-
-function absoluteReset(resetsAt: string | null): string | null {
-  if (!resetsAt) return null;
-  const ms = Date.parse(resetsAt);
-  if (Number.isNaN(ms)) return null;
-  const d = new Date(ms);
-  return `${d.getMonth() + 1}/${d.getDate()} ${formatClock(ms)}`;
-}
-
-function rowLine(row: WindowRow): string {
-  const value = row.usedPercent !== null ? `${row.usedPercent}%` : row.valueLabel ?? "—";
-  const reset = row.resetIn ? ` · resets ${row.resetIn}${absoluteReset(row.resetsAt) ? ` (${absoluteReset(row.resetsAt)})` : ""}` : "";
-  return `  ${row.label}: ${value}${reset}`;
-}
-
-/** Multi-line tooltip: every window with reset times, stale markers and full errors. */
-export function tooltipText(panels: ReadonlyArray<ProviderPanel>, now: Date = new Date()): string {
-  const blocks = panels.map((p) => {
-    const head = [p.label];
-    if (p.state === "stale" && p.asOf !== null) head.push(`(stale, as of ${formatAsOf(p.asOf, now)})`);
-    else if (p.state === "ok" && p.asOf !== null) head.push(`(as of ${formatAsOf(p.asOf, now)})`);
-    const lines = [head.join(" ")];
-    for (const row of [...p.windows, ...p.tooltipOnly]) lines.push(rowLine(row));
-    if (p.state === "empty" && p.message) lines.push(`  ${p.message}`);
-    if (p.message && (p.state === "stale" || p.state === "unavailable")) lines.push(`  ${p.message}`);
-    if (p.errorDetail) lines.push(`  Error: ${p.errorDetail}`);
-    return lines.join("\n");
-  });
-  return blocks.join("\n\n");
 }

@@ -1,6 +1,6 @@
 {
   "name": "paperclip-limits-plugin",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Paperclip plugin: Claude/Codex subscription usage limits in the sidebar",
   "type": "module",

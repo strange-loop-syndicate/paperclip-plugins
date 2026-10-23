@@ -21,14 +21,15 @@ test("used-providers returns the providers of this company's agents", async () =
     ],
   });
   await plugin.definition.setup(harness.ctx);
-  const data = await harness.getData<{ providers: unknown[] }>("used-providers", { companyId: COMPANY });
+  const data = await harness.getData<{ providers: unknown[]; agentIds: unknown }>("used-providers", { companyId: COMPANY });
   assert.deepEqual(data.providers, [{ slug: "anthropic", label: "Claude" }]);
+  assert.deepEqual(data.agentIds, { anthropic: ["a1"] });
 });
 
 test("used-providers returns nothing without a companyId", async () => {
   const harness = createTestHarness({ manifest });
   await plugin.definition.setup(harness.ctx);
-  assert.deepEqual(await harness.getData("used-providers", {}), { providers: [] });
+  assert.deepEqual(await harness.getData("used-providers", {}), { providers: [], agentIds: {} });
 });
 
 test("used-providers needs the agents.read capability", async () => {
