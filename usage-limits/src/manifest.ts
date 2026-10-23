@@ -3,7 +3,7 @@ import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 const manifest: PaperclipPluginManifestV1 = {
   id: "lab.usage-limits",
   apiVersion: 1,
-  version: "0.1.0",
+  version: "0.2.0",
   displayName: "Usage Limits",
   description:
     "Shows Claude and Codex subscription usage windows (% used, reset time) in the sidebar for the providers this company's agents use.",
@@ -17,10 +17,10 @@ const manifest: PaperclipPluginManifestV1 = {
   ui: {
     slots: [
       {
-        type: "sidebarPanel",
-        id: "usage-limits-panel",
+        type: "sidebar",
+        id: "usage-limits-sidebar",
         displayName: "Usage limits",
-        exportName: "UsageLimitsSidebarPanel",
+        exportName: "UsageLimitsSidebar",
       },
     ],
   },

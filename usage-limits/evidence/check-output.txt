@@ -1,44 +1,66 @@
 
-> paperclip-limits-plugin@0.1.0 check
+> paperclip-limits-plugin@0.2.0 check
 > npm run typecheck && npm test && npm run build && npm run validate
 
 
-> paperclip-limits-plugin@0.1.0 typecheck
+> paperclip-limits-plugin@0.2.0 typecheck
 > tsc --noEmit
 
 
-> paperclip-limits-plugin@0.1.0 test
+> paperclip-limits-plugin@0.2.0 test
 > node --test test/*.test.ts
 
-✔ usedProviders keeps only claude_local/codex_local, skips terminated, stable order (0.756166ms)
-✔ usedProviders ignores a provider whose only agent is terminated (0.073958ms)
-✔ formatResetIn covers minutes, hours, days, past and invalid (0.091916ms)
-✔ normalizePercent clamps and rounds; severity thresholds (0.070541ms)
-✔ buildPanels maps ok windows per used provider only (0.174625ms)
-✔ buildPanels marks provider errors and missing providers unavailable (0.107917ms)
-✔ buildPanels falls back to errorFamily, then a generic message (0.17025ms)
-✔ buildPanels prefers an ok result over a failed duplicate (0.075583ms)
-✔ buildPanels shows empty state when ok but no windows (e.g. bedrock) (0.104458ms)
-✔ buildPanels marks every provider unavailable on a fetch error, shortened (0.151333ms)
-✔ credit-style window without a percent keeps its value label (0.064333ms)
-✔ used-providers returns the providers of this company's agents (1.189709ms)
-✔ used-providers returns nothing without a companyId (0.11875ms)
-✔ used-providers needs the agents.read capability (0.198375ms)
-ℹ tests 14
+✔ backoff: 5 min normally, doubling to a 30 min cap after failures (0.960958ms)
+✔ first load fetches; then nothing until 5 min have passed, across tabs (0.358167ms)
+✔ a running fetch in another tab blocks both automatic and manual fetches (2.457125ms)
+✔ a tab closed mid-fetch does not block the others for longer than the in-flight TTL + gap (0.087667ms)
+✔ a 429 on a used provider backs off 10, 20, 30, 30 min and keeps the last good windows (0.161875ms)
+✔ a failing provider that no agent uses does not cause a backoff (0.062709ms)
+✔ a missing used provider counts as a failure (0.105708ms)
+✔ a failed request keeps last good data and backs off (0.172875ms)
+✔ manual refresh ignores the backoff but obeys the 60 s minimum gap (0.126458ms)
+✔ a far-future timestamp (clock change, bad data) cannot block fetching (0.153166ms)
+✔ parseCache round-trips a stored entry and rejects foreign or broken values (0.22375ms)
+✔ usedProviders keeps only claude_local/codex_local, skips terminated, stable order (3.8415ms)
+✔ usedProviders ignores a provider whose only agent is terminated (0.121209ms)
+✔ formatResetIn covers minutes, hours, days, past and invalid (0.121167ms)
+✔ normalizePercent clamps and rounds; severity thresholds (0.075ms)
+✔ buildPanels maps ok windows per used provider only (0.387458ms)
+✔ buildPanels marks provider errors and missing providers unavailable (0.30725ms)
+✔ buildPanels falls back to errorFamily, then a generic message (0.256ms)
+✔ buildPanels prefers an ok result over a failed duplicate (0.087125ms)
+✔ buildPanels shows empty state when ok but no windows (e.g. bedrock) (0.073667ms)
+✔ buildPanels: a failed request with no older data is unavailable, full text kept for the tooltip (0.134584ms)
+✔ credit-style window without a percent keeps its value label (0.113709ms)
+✔ buildPanels keeps last good windows as stale when the provider now fails (0.125583ms)
+✔ buildPanels keeps last good windows as stale when the whole request fails (0.066542ms)
+✔ shortError: rate limit, timeout, auth, generic; retry hint only while waiting (0.058834ms)
+✔ relabelWindow: a 5h label that resets days away becomes Weekly limit (0.092125ms)
+✔ relabelWindow leaves consistent, unknown and non-5h labels alone (0.06225ms)
+✔ toWindowRow applies the relabel (0.054292ms)
+✔ a $0 credits row next to percent windows moves to the tooltip (2.431959ms)
+✔ isZeroCreditRow keeps real balances and credits-only accounts visible (0.369916ms)
+✔ compactItem picks the highest-used window and tags stale / rate-limited states (0.211625ms)
+✔ tooltipText lists every window with resets, the stale marker and the full error (0.309459ms)
+✔ formatDuration and formatClock (0.050208ms)
+✔ used-providers returns the providers of this company's agents (1.090917ms)
+✔ used-providers returns nothing without a companyId (0.12625ms)
+✔ used-providers needs the agents.read capability (0.197209ms)
+ℹ tests 36
 ℹ suites 0
-ℹ pass 14
+ℹ pass 36
 ℹ fail 0
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
-ℹ duration_ms 342.493542
+ℹ duration_ms 429.3675
 
-> paperclip-limits-plugin@0.1.0 build
+> paperclip-limits-plugin@0.2.0 build
 > node ./build.mjs
 
 built dist/manifest.js, dist/worker.js, dist/ui/index.js
 
-> paperclip-limits-plugin@0.1.0 validate
+> paperclip-limits-plugin@0.2.0 validate
 > node scripts/validate-manifest.mjs
 
-manifest valid: lab.usage-limits@0.1.0 capabilities=agents.read,ui.sidebar.register
+manifest valid: lab.usage-limits@0.2.0 capabilities=agents.read,ui.sidebar.register

@@ -5,3 +5,6 @@ export function useHostContext() {
 export function usePluginData() {
   return { data: null, loading: false, error: null, refresh() {} };
 }
+export function useHostNavigation() {
+  return { resolveHref: (to) => to, navigate() {}, linkProps: (to) => ({ href: to, onClick() {} }) };
+}

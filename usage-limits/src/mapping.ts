@@ -41,15 +41,42 @@ export interface WindowRow {
   detail: string | null;
 }
 
-export type PanelState = "ok" | "empty" | "unavailable";
+export type PanelState = "ok" | "stale" | "empty" | "unavailable";
 
 export interface ProviderPanel {
   slug: string;
   label: string;
   state: PanelState;
-  /** Reason text for "empty" and "unavailable" states. */
+  /** Short reason for "stale", "empty" and "unavailable" states. */
   message: string | null;
+  /** Full error text from the server, for the tooltip only. */
+  errorDetail: string | null;
+  /** When the shown windows were fetched (ms epoch); set for "ok" and "stale". */
+  asOf: number | null;
   windows: WindowRow[];
+  /** Rows kept out of the panel and shown in the tooltip only (e.g. $0 credits). */
+  tooltipOnly: WindowRow[];
+}
+
+/** Last successful windows for one provider, kept across failed fetches. */
+export interface LastGood {
+  windows: QuotaWindow[];
+  /** ms epoch of the response that carried these windows. */
+  fetchedAt: number;
+  source?: string | null;
+}
+
+export interface PanelInput {
+  /** Latest quota-windows response; null when none yet or the latest fetch failed. */
+  results: ReadonlyArray<ProviderQuotaResult> | null;
+  /** When `results` arrived (ms epoch). */
+  fetchedAt: number | null;
+  /** Why the latest fetch failed as a whole (HTTP error, network); null otherwise. */
+  fetchError: string | null;
+  /** Last good windows per provider slug. */
+  lastGood: Readonly<Record<string, LastGood>>;
+  /** Next automatic attempt (ms epoch) while backing off; null when not backing off. */
+  retryAt: number | null;
 }
 
 /** Adapter types that report quota windows, mapped to the server's provider slug. */
@@ -59,7 +86,10 @@ export const ADAPTER_PROVIDERS: Readonly<Record<string, ProviderInfo>> = {
 };
 
 const PROVIDER_ORDER = ["anthropic", "openai"];
-const MAX_MESSAGE_LENGTH = 160;
+const PROVIDER_VENDOR: Readonly<Record<string, string>> = { anthropic: "Anthropic", openai: "OpenAI" };
+const HOUR_MS = 3_600_000;
+/** Clock skew allowed before a "5h" label is called wrong. */
+const RELABEL_TOLERANCE_MS = 5 * 60_000;
 
 export const WARN_PERCENT = 75;
 export const CRITICAL_PERCENT = 90;
@@ -94,83 +124,205 @@ export function normalizePercent(value: unknown): number | null {
   return Math.round(Math.min(100, Math.max(0, value)));
 }
 
+/** "42m", "3h 05m", "2d 4h"; "0m" for zero or less. */
+export function formatDuration(ms: number): string {
+  const totalMinutes = Math.max(0, Math.ceil(ms / 60_000));
+  if (totalMinutes < 60) return `${totalMinutes}m`;
+  const totalHours = Math.floor(totalMinutes / 60);
+  if (totalHours < 24) return `${totalHours}h ${String(totalMinutes % 60).padStart(2, "0")}m`;
+  const days = Math.floor(totalHours / 24);
+  const hours = totalHours % 24;
+  return hours === 0 ? `${days}d` : `${days}d ${hours}h`;
+}
+
 /** "in 42m", "in 3h 05m", "in 2d 4h", "now"; null for a missing or invalid time. */
 export function formatResetIn(resetsAt: string | null, now: Date): string | null {
   if (!resetsAt) return null;
   const resetMs = Date.parse(resetsAt);
   if (Number.isNaN(resetMs)) return null;
-  const totalMinutes = Math.ceil((resetMs - now.getTime()) / 60_000);
-  if (totalMinutes <= 0) return "now";
-  if (totalMinutes < 60) return `in ${totalMinutes}m`;
-  const totalHours = Math.floor(totalMinutes / 60);
-  if (totalHours < 24) {
-    const minutes = String(totalMinutes % 60).padStart(2, "0");
-    return `in ${totalHours}h ${minutes}m`;
-  }
-  const days = Math.floor(totalHours / 24);
-  const hours = totalHours % 24;
-  return hours === 0 ? `in ${days}d` : `in ${days}d ${hours}h`;
+  if (Math.ceil((resetMs - now.getTime()) / 60_000) <= 0) return "now";
+  return `in ${formatDuration(resetMs - now.getTime())}`;
 }
 
-function shorten(text: string): string {
-  const oneLine = text.replace(/\s+/g, " ").trim();
-  return oneLine.length > MAX_MESSAGE_LENGTH
-    ? `${oneLine.slice(0, MAX_MESSAGE_LENGTH - 1)}…`
-    : oneLine;
+/** Local "HH:MM" for an "as of" marker. */
+export function formatClock(ms: number): string {
+  const d = new Date(ms);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+/**
+ * Fix a window label that its own reset time contradicts.
+ *
+ * The Codex adapter labels `primary_window` "5h limit" whatever its length. On
+ * accounts where the primary window is weekly, that reads "5h limit … resets in
+ * 6d 23h". A "5h" label whose reset is more than 5 h away becomes "Weekly limit";
+ * any prefix (e.g. "GPT-5 · ") is kept. Other labels pass through unchanged.
+ */
+export function relabelWindow(label: string, resetsAt: string | null, now: Date): string {
+  if (!/\b5\s*h\b/i.test(label) || !resetsAt) return label;
+  const resetMs = Date.parse(resetsAt);
+  if (Number.isNaN(resetMs)) return label;
+  if (resetMs - now.getTime() <= 5 * HOUR_MS + RELABEL_TOLERANCE_MS) return label;
+  return label.replace(/\b5\s*h\b(\s*limit\b)?/i, "Weekly limit");
+}
+
+/**
+ * A credits row that only says "$0.00 remaining" next to subscription
+ * percentage windows carries no signal; it goes to the tooltip instead.
+ */
+export function isZeroCreditRow(row: WindowRow, siblings: ReadonlyArray<WindowRow>): boolean {
+  if (row.usedPercent !== null || !/credit/i.test(row.label)) return false;
+  if (!/^\$?0+(\.0+)?(?![\d.])/.test((row.valueLabel ?? "").trim())) return false;
+  return siblings.some((s) => s !== row && s.usedPercent !== null);
+}
+
+/**
+ * Short, human error text for the sidebar, e.g.
+ * "Rate-limited by Anthropic, retrying in 10m". The full text goes to the tooltip.
+ *
+ * @param slug provider slug, or null for a failure of the whole request
+ */
+export function shortError(slug: string | null, raw: string, retryAt: number | null, now: Date): string {
+  const vendor = slug ? PROVIDER_VENDOR[slug] : undefined;
+  let text: string;
+  if (/\b429\b|rate[\s-]?limit|too many requests/i.test(raw)) {
+    text = vendor ? `Rate-limited by ${vendor}` : "Rate-limited";
+  } else if (/timed out|timeout/i.test(raw)) {
+    text = "Timed out";
+  } else if (/\b40[13]\b|unauthori[sz]ed|forbidden|auth|token|log\s?in|sign\s?in/i.test(raw)) {
+    text = "Auth failed";
+  } else if (/no quota data|not loaded/i.test(raw)) {
+    text = "No quota data";
+  } else {
+    text = slug ? "Lookup failed" : "Usage request failed";
+  }
+  if (retryAt !== null && retryAt > now.getTime()) {
+    text += `, retrying in ${formatDuration(retryAt - now.getTime())}`;
+  }
+  return text;
 }
 
 export function toWindowRow(window: QuotaWindow, now: Date): WindowRow {
   const usedPercent = normalizePercent(window.usedPercent);
+  const resetsAt = window.resetsAt ?? null;
   return {
-    label: window.label || "Window",
+    label: relabelWindow(window.label || "Window", resetsAt, now),
     usedPercent,
     severity: severityFor(usedPercent),
     valueLabel: window.valueLabel ?? null,
-    resetsAt: window.resetsAt ?? null,
-    resetIn: formatResetIn(window.resetsAt ?? null, now),
+    resetsAt,
+    resetIn: formatResetIn(resetsAt, now),
     detail: window.detail ?? null,
   };
+}
+
+function splitRows(windows: ReadonlyArray<QuotaWindow>, now: Date): Pick<ProviderPanel, "windows" | "tooltipOnly"> {
+  const rows = (Array.isArray(windows) ? windows : []).map((w) => toWindowRow(w, now));
+  const tooltipOnly = rows.filter((r) => isZeroCreditRow(r, rows));
+  return { windows: rows.filter((r) => !tooltipOnly.includes(r)), tooltipOnly };
+}
+
+/** The provider entry to use when the server returns more than one: an ok one first. */
+export function pickResult(
+  results: ReadonlyArray<ProviderQuotaResult>,
+  slug: string,
+): ProviderQuotaResult | undefined {
+  const matches = results.filter((r) => r.provider === slug);
+  return matches.find((r) => r.ok) ?? matches[0];
 }
 
 /**
  * Build one panel per used provider.
  *
- * @param results quota-windows response, or null when the fetch failed
- * @param fetchError reason the fetch failed; marks every panel unavailable
+ * A provider that fails now but has older good windows shows them as "stale"
+ * with a short reason. Only a provider with no good data at all is "unavailable".
  */
-export function buildPanels(
-  used: ReadonlyArray<ProviderInfo>,
-  results: ReadonlyArray<ProviderQuotaResult> | null,
-  fetchError: string | null,
-  now: Date,
-): ProviderPanel[] {
+export function buildPanels(used: ReadonlyArray<ProviderInfo>, input: PanelInput, now: Date): ProviderPanel[] {
   return used.map((info): ProviderPanel => {
-    const base = { slug: info.slug, label: info.label };
-    if (fetchError !== null || results === null) {
-      return {
-        ...base,
-        state: "unavailable",
-        message: shorten(fetchError ?? "Quota data not loaded"),
-        windows: [],
-      };
+    const base = { slug: info.slug, label: info.label, tooltipOnly: [] as WindowRow[] };
+    const result = input.results ? pickResult(input.results, info.slug) : undefined;
+
+    if (result?.ok) {
+      const rows = splitRows(result.windows, now);
+      if (rows.windows.length === 0 && rows.tooltipOnly.length === 0) {
+        return { ...base, state: "empty", message: "No quota windows reported", errorDetail: null, asOf: input.fetchedAt, windows: [] };
+      }
+      return { ...base, ...rows, state: "ok", message: null, errorDetail: null, asOf: input.fetchedAt };
     }
-    const matches = results.filter((r) => r.provider === info.slug);
-    const result = matches.find((r) => r.ok) ?? matches[0];
-    if (!result) {
-      return { ...base, state: "unavailable", message: "Provider reported no quota data", windows: [] };
+
+    let raw: string;
+    let errorSlug: string | null = info.slug;
+    if (input.results === null) {
+      raw = input.fetchError ?? "Quota data not loaded";
+      errorSlug = null;
+    } else if (!result) {
+      raw = "Provider reported no quota data";
+    } else {
+      raw = result.error || result.errorFamily || "Quota lookup failed";
     }
-    if (!result.ok) {
-      return {
-        ...base,
-        state: "unavailable",
-        message: shorten(result.error || result.errorFamily || "Quota lookup failed"),
-        windows: [],
-      };
+    const message = shortError(errorSlug, raw, input.retryAt, now);
+    const errorDetail = raw.replace(/\s+/g, " ").trim();
+
+    const good = input.lastGood[info.slug];
+    if (good && good.windows.length > 0) {
+      return { ...base, ...splitRows(good.windows, now), state: "stale", message, errorDetail, asOf: good.fetchedAt };
     }
-    const windows = (Array.isArray(result.windows) ? result.windows : []).map((w) => toWindowRow(w, now));
-    if (windows.length === 0) {
-      return { ...base, state: "empty", message: "No quota windows reported", windows };
-    }
-    return { ...base, state: "ok", message: null, windows };
+    return { ...base, state: "unavailable", message, errorDetail, asOf: null, windows: [] };
   });
+}
+
+/** One provider in the compact sidebar line, e.g. "Claude 82%". */
+export interface CompactItem {
+  slug: string;
+  label: string;
+  /** Highest used % across the provider's windows; null when none is known. */
+  percent: number | null;
+  severity: Severity;
+  state: PanelState;
+  /** Small marker after the value: "stale", "retry 10m", "n/a"; null when fresh. */
+  tag: string | null;
+}
+
+export function compactItem(panel: ProviderPanel, input: Pick<PanelInput, "retryAt">, now: Date): CompactItem {
+  const percents = panel.windows.map((w) => w.usedPercent).filter((p): p is number => p !== null);
+  const percent = percents.length > 0 ? Math.max(...percents) : null;
+  let tag: string | null = null;
+  if (panel.state === "stale") tag = "stale";
+  else if (panel.state === "unavailable") {
+    tag =
+      input.retryAt !== null && input.retryAt > now.getTime()
+        ? `retry ${formatDuration(input.retryAt - now.getTime())}`
+        : "n/a";
+  }
+  return { slug: panel.slug, label: panel.label, percent, severity: severityFor(percent), state: panel.state, tag };
+}
+
+function absoluteReset(resetsAt: string | null): string | null {
+  if (!resetsAt) return null;
+  const ms = Date.parse(resetsAt);
+  if (Number.isNaN(ms)) return null;
+  const d = new Date(ms);
+  return `${d.getMonth() + 1}/${d.getDate()} ${formatClock(ms)}`;
+}
+
+function rowLine(row: WindowRow): string {
+  const value = row.usedPercent !== null ? `${row.usedPercent}%` : row.valueLabel ?? "—";
+  const reset = row.resetIn ? ` · resets ${row.resetIn}${absoluteReset(row.resetsAt) ? ` (${absoluteReset(row.resetsAt)})` : ""}` : "";
+  return `  ${row.label}: ${value}${reset}`;
+}
+
+/** Multi-line tooltip: every window with reset times, stale markers and full errors. */
+export function tooltipText(panels: ReadonlyArray<ProviderPanel>): string {
+  const blocks = panels.map((p) => {
+    const head = [p.label];
+    if (p.state === "stale" && p.asOf !== null) head.push(`(stale, as of ${formatClock(p.asOf)})`);
+    else if (p.state === "ok" && p.asOf !== null) head.push(`(as of ${formatClock(p.asOf)})`);
+    const lines = [head.join(" ")];
+    for (const row of [...p.windows, ...p.tooltipOnly]) lines.push(rowLine(row));
+    if (p.state === "empty" && p.message) lines.push(`  ${p.message}`);
+    if (p.message && (p.state === "stale" || p.state === "unavailable")) lines.push(`  ${p.message}`);
+    if (p.errorDetail) lines.push(`  Error: ${p.errorDetail}`);
+    return lines.join("\n");
+  });
+  return blocks.join("\n\n");
 }
