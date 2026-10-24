@@ -1,0 +1,27 @@
+{
+  "name": "paperclip-linear-intake",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Paperclip plugin: turns Linear issues delegated to the agent user into Project Lead tasks",
+  "type": "module",
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/worker.js"
+  },
+  "scripts": {
+    "build": "node ./build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/*.test.ts",
+    "validate": "node scripts/validate-manifest.mjs",
+    "check": "npm run typecheck && npm test && npm run build && npm run validate"
+  },
+  "devDependencies": {
+    "@paperclipai/plugin-sdk": "2026.1012.0",
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}
