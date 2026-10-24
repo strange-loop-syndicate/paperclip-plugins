@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, beforeEach, describe, it } from "node:test";
 import { normalizeContent } from "../src/content.js";
-import { createMemosClient, parseSearchResponse, recallAcrossScopes } from "../src/memos-client.js";
+import { addedMemoryIds, createMemosClient, parseSearchResponse, recallAcrossScopes } from "../src/memos-client.js";
 import { scopeFor } from "../src/scope.js";
 import { deadUrl, seedMemory, startFakeServer } from "./helpers/fake-servers.js";
 
@@ -24,7 +24,7 @@ describe("MemOS client", () => {
 
   it("round-trips a memory through add and search", async () => {
     const client = createMemosClient({ baseUrl: server.url, logger: collectingLogger() });
-    assert.deepEqual(await client.add({ scope, content: "remember this", metadata: { kind: "note" } }), { ok: true });
+    assert.deepEqual(await client.add({ scope, content: "remember this", metadata: { kind: "note" } }), { ok: true, memoryIds: ["mem-1"] });
     const found = await client.search({ scope, query: "remember" });
     assert.equal(found.length, 1);
     assert.equal(found[0].content, "remember this");
@@ -77,6 +77,19 @@ describe("MemOS client", () => {
     assert.match(logger.warnings[0], /cube not found/);
   });
 
+  it("an add answered 200 with no created memory IDs is not stored, and the error carries no memory text", async () => {
+    server.state.addMode = "empty";
+    try {
+      const logger = collectingLogger();
+      const res = await createMemosClient({ baseUrl: server.url, logger }).add({ scope, content: "SECRET-MEMORY-TEXT" });
+      assert.deepEqual(res, { ok: false, error: "MemOS answered with no created memory IDs" });
+      assert.equal(logger.warnings.length, 1);
+      assert.doesNotMatch(logger.warnings[0], /SECRET-MEMORY-TEXT/);
+    } finally {
+      server.state.addMode = "ok";
+    }
+  });
+
   it("is a no-op when no base URL is configured", async () => {
     const client = createMemosClient({ baseUrl: "" });
     assert.equal(client.configured, false);
@@ -93,6 +106,16 @@ describe("MemOS client", () => {
     assert.deepEqual(all.map((m) => m.content), ["Own lesson", "Shared lesson"]);
     const one = await recallAcrossScopes({ client, scopes, query: "q", topK: 1, normalize: normalizeContent });
     assert.equal(one.length, 1);
+  });
+});
+
+describe("add response parsing", () => {
+  it("reads the created memory IDs, and finds none in an empty or unknown answer", () => {
+    assert.deepEqual(addedMemoryIds({ code: 200, data: [{ memory: "a", memory_id: "m1" }, { memory: "b", memory_id: "m2" }] }), ["m1", "m2"]);
+    assert.deepEqual(addedMemoryIds({ code: 200, data: [{ memory: "a", memory_id: "" }, { memory: "b" }, null] }), []);
+    assert.deepEqual(addedMemoryIds({ code: 200, message: "Memory added successfully", data: [] }), []);
+    assert.deepEqual(addedMemoryIds({ code: 200, data: null }), []);
+    assert.deepEqual(addedMemoryIds(null), []);
   });
 });
 

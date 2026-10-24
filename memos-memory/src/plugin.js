@@ -117,7 +117,9 @@ export function createMemoryPlugin({ fetchImpl = (url, init) => globalThis.fetch
 
   /**
    * Store one memory unless the same normalized content was already stored in
-   * this scope. Returns { status: "stored" | "duplicate" | "failed", contentHash }.
+   * this scope. Returns { status: "stored" | "duplicate" | "failed", contentHash },
+   * plus `error` (no memory text) when failed. An add MemOS answers without
+   * created memory IDs is failed: no dedup marker, so a retry can store it.
    */
   async function retain(ctx, cfg, { scope, content, metadata }) {
     const hash = contentHash(content);
@@ -127,13 +129,13 @@ export function createMemoryPlugin({ fetchImpl = (url, init) => globalThis.fetch
     if (pending) {
       // Report what the concurrent write actually did, not a guess.
       const first = await pending;
-      return { status: first.status === "failed" ? "failed" : "duplicate", contentHash: hash };
+      return first.status === "failed" ? first : { status: "duplicate", contentHash: hash };
     }
     const work = (async () => {
       if (await ctx.state.get(stateKey)) return { status: "duplicate", contentHash: hash };
       const fullMetadata = { ...metadata, companyId: scope.companyId, projectId: scope.projectId, contentHash: hash };
       const res = await cfg.client.add({ scope, content, metadata: fullMetadata, timeoutMs: cfg.captureTimeoutMs });
-      if (!res.ok) return { status: "failed", contentHash: hash };
+      if (!res.ok) return { status: "failed", contentHash: hash, error: res.error ?? "memos add failed" };
       // The memory is already in MemOS, so report it stored. Without the
       // marker a redelivered event can store it again (see SETUP.md, limits).
       try {

@@ -241,8 +241,15 @@ export function createCapture({ now = () => Date.now() } = {}) {
       ),
     );
     const statuses = results.map((r) => (r.status === "fulfilled" ? r.value.status : "failed"));
+    // The first failure's reason, never memory text: an HTTP error, a
+    // timeout, or an add MemOS answered with no created memory IDs.
+    const failure = results.find((r) => r.status === "rejected" || r.value.status === "failed");
+    if (failure) {
+      const error = `memos: ${failure.status === "rejected" ? failure.reason?.message : (failure.value.error ?? "add failed")}`;
+      await logVerdict(ctx, cfg, item, { ...record, verdict: "pass", stored: statuses, error });
+      return queue(ctx, item, error);
+    }
     await logVerdict(ctx, cfg, item, { ...record, verdict: "pass", stored: statuses });
-    if (statuses.includes("failed")) return queue(ctx, item, "memos add failed");
     await markDone(ctx, item, "stored");
     return "stored";
   }
