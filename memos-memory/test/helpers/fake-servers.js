@@ -23,6 +23,9 @@ export async function startFakeServer({ issues = {} } = {}) {
       answers: { decision: 0.9, lesson: 0.1, outcome: 0.2, fact: 0.1, routine: 0.1 },
       // Extracted memories, or a function of the request body
       memories: [{ type: "decision", text: "Pre-prompt recall runs in a command wrapper, not a plugin hook." }],
+      // A raw chat choice `{ content, finish_reason }` (or a function of the
+      // request body) that replaces the JSON memories reply; null for none.
+      chatReply: null,
     },
   };
 
@@ -62,8 +65,10 @@ export async function startFakeServer({ issues = {} } = {}) {
           return send(200, { model: b.model, answers, usage: { input_tokens: 100, cost: 0.0001 } });
         }
         if (state.llm.chatMode === "error503") return send(503, { error: "overloaded" });
+        const raw = typeof state.llm.chatReply === "function" ? state.llm.chatReply(b) : state.llm.chatReply;
+        if (raw) return send(200, { choices: [{ finish_reason: raw.finish_reason ?? "stop", message: { role: "assistant", content: raw.content } }], usage: { cost: 0.0002 } });
         const memories = typeof state.llm.memories === "function" ? state.llm.memories(b) : state.llm.memories;
-        return send(200, { choices: [{ message: { role: "assistant", content: JSON.stringify({ memories }) } }], usage: { cost: 0.0002 } });
+        return send(200, { choices: [{ finish_reason: "stop", message: { role: "assistant", content: JSON.stringify({ memories }) } }], usage: { cost: 0.0002 } });
       }
 
       if (state.mode === "slow" || state.delayMs > 0) {
