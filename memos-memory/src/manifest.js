@@ -14,6 +14,7 @@ const manifest = {
     "plugin.state.write",
     "issues.read",
     "issue.comments.read",
+    "issue.comments.create",
     "projects.read",
     "secrets.read-ref",
     "jobs.schedule",
@@ -48,6 +49,12 @@ const manifest = {
       topK: { type: "integer", minimum: 1, maximum: 50, default: 8 },
       captureComments: { type: "boolean", default: true, description: "Send new agent and board comments to the Jev gate." },
       captureRunOutcomes: { type: "boolean", default: true, description: "Send each finished run's last agent comment to the Jev gate." },
+      eventHealthIssue: {
+        type: "string",
+        default: "SLS-120",
+        description:
+          "Issue (identifier or ID) that gets one comment when the plugin stops getting events while comments still come in. Empty: log the error only.",
+      },
       captureProjectIds: {
         type: "array",
         description: "Optional capture allowlist. If set, memories are captured only for issues in these project IDs. Empty captures every project.",
@@ -62,6 +69,13 @@ const manifest = {
       displayName: "Retry deferred memory captures",
       description: "Retries items that waited because Jev, the extractor or MemOS was down. Items older than 24 h are dropped.",
       schedule: "*/10 * * * *",
+    },
+    {
+      jobKey: "event-health",
+      displayName: "Check that events still arrive",
+      description:
+        "Every minute: if comments came in but no event reached the plugin for 10 minutes, logs an error and posts one comment on the alert issue. A board user must then disable and enable the plugin.",
+      schedule: "* * * * *",
     },
   ],
   apiRoutes: [
