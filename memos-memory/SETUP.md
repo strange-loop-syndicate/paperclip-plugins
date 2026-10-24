@@ -194,6 +194,8 @@ npm test
 - **Jev and the extractor see comment text.** It goes to OpenRouter (Jev and Haiku). Code blocks and `<details>` are cut first; other secrets pasted in prose are not.
 - **The run result is a comment.** The SDK gives plugins no read of a run's own result, so the run event uses the run's newest agent comment.
 - **`memory_retain` is not gated.** It stores what the agent wrote, in both modes. It is an explicit call, not capture.
+- **The shadow log ignores sharing.** Any agent of the company can read the extracted memories of every project through `shadow-log`. It stays open to agents because an agent writes the shadow report. Limit it to `board` once saving is on.
+- **Archived projects leave sharing.** When the page saves, shares of an archived project are dropped with a log line. Unarchiving the project later does not bring them back. Set them again on the page.
 - **Double signals outside Paperclip.** Started by a non-job-control `sh -c` under a terminal, the wrapper is not group leader but shares the group with the CLI. Ctrl-C then reaches the CLI twice, and Claude treats that as "exit now". Paperclip spawns the wrapper as group leader, so this does not happen there.
 - **Resumed sessions repeat memories.** Each resumed heartbeat adds a new block of up to `MEMOS_MAX_BLOCK_CHARS` to the conversation, often with the same memories. To limit the cost, lower `MEMOS_MAX_BLOCK_CHARS`. A later version could track injected hashes per session.
 - **Dedup marker write can fail after the memory is stored.** The memory still counts as stored and a warning is logged. A redelivered event can then store it a second time. MemOS has no write-if-absent call to close this gap.

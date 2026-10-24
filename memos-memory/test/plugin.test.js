@@ -401,6 +401,26 @@ describe("plugin tools and sharing", () => {
     assert.deepEqual(data.projects.map((p) => p.name).sort(), ["Memory", "Ops"]);
   });
 
+  it("archiving a shared project does not lock the sharing page", async () => {
+    const h = await setup(server, {}, { projects: [project("p1", "Memory"), project("p2", "Ops"), project("p3", "Lab")] });
+    await h.performAction("save-sharing", { shares: [{ projectId: "p2", readers: ["p1"] }, { projectId: "p1", readers: ["p3"] }] }, board);
+    h.seed({ projects: [{ ...project("p2", "Ops"), archivedAt: new Date() }] });
+    // The page still holds p2's share and p2 as a reader, and sends them back.
+    const saved = await h.performAction("save-sharing", { shares: [{ projectId: "p2", readers: ["p1"] }, { projectId: "p1", readers: ["p3", "p2"] }, { projectId: "p3", readers: ["p1"] }] }, board);
+    const expected = [{ projectId: "p1", projectName: "Memory", readers: ["p3"] }, { projectId: "p3", projectName: "Lab", readers: ["p1"] }];
+    assert.deepEqual(saved.shares, expected);
+    assert.deepEqual((await h.getData("sharing-settings", { companyId: A })).shares, expected);
+    await assert.rejects(h.performAction("save-sharing", { shares: [{ projectId: "p-foreign", readers: "all" }] }, board), /not in this company/);
+  });
+
+  it("a shared project the host no longer lists is dropped, not refused", async () => {
+    const h = await setup(server, {}, { projects: [project("p1", "Memory"), project("p2", "Ops"), project("p3", "Lab")] });
+    await h.performAction("save-sharing", { shares: [{ projectId: "p3", readers: ["p1"] }] }, board);
+    h.seed({ projects: [project("p3", "Lab", B)] });
+    const saved = await h.performAction("save-sharing", { shares: [{ projectId: "p3", readers: ["p1"] }, { projectId: "p2", readers: ["p1"] }] }, board);
+    assert.deepEqual(saved.shares, [{ projectId: "p2", projectName: "Ops", readers: ["p1"] }]);
+  });
+
   it("the settings page round-trips sharing", async () => {
     const h = await setup(server);
     await h.performAction("save-sharing", { shares: [{ projectId: "p2", readers: ["p1"] }, { projectId: "p1", readers: [] }] }, board);

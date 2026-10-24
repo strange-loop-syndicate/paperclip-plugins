@@ -169,9 +169,14 @@ export function createMemoryPlugin({ fetchImpl = (url, init) => globalThis.fetch
 
   // ---- sharing (settings page is the only writer) ----
 
-  async function listProjects(ctx, companyId) {
+  /** This company's projects, archived ones included. */
+  async function listCompanyProjects(ctx, companyId) {
     const projects = await withTimeout(ctx.projects.list({ companyId, limit: 500 }), HOST_CALL_TIMEOUT_MS, "projects.list");
-    return (projects ?? []).filter((p) => p.companyId === companyId && !p.archivedAt);
+    return (projects ?? []).filter((p) => p.companyId === companyId);
+  }
+
+  async function listProjects(ctx, companyId) {
+    return (await listCompanyProjects(ctx, companyId)).filter((p) => !p.archivedAt);
   }
 
   async function loadShares(ctx, companyId) {
@@ -202,10 +207,21 @@ export function createMemoryPlugin({ fetchImpl = (url, init) => globalThis.fetch
     if (actionCtx?.actor?.type !== "user") throw new Error("Only a board user can change memory sharing.");
     const companyId = actionCtx.companyId ?? params.companyId;
     if (typeof companyId !== "string" || !companyId) throw new Error("companyId is required");
-    const projects = await listProjects(ctx, companyId);
-    const known = new Map(projects.map((p) => [p.id, p.name]));
+    const all = await listCompanyProjects(ctx, companyId);
+    const known = new Map(all.filter((p) => !p.archivedAt).map((p) => [p.id, p.name]));
+    // Projects that were this company's but are gone from the page: archived
+    // ones, and any the stored settings name (checked when they were saved).
+    // Their shares are dropped, not refused, or the page could never save again.
+    // Readers outside `known` are dropped by normalizeShares already.
+    const retired = new Set(all.filter((p) => p.archivedAt).map((p) => p.id));
+    for (const s of await loadShares(ctx, companyId)) retired.add(s.projectId);
+    for (const id of known.keys()) retired.delete(id);
+    const submitted = Array.isArray(params.shares) ? params.shares : Array.isArray(params.shares?.shares) ? params.shares.shares : [];
+    const dropped = submitted.filter((s) => retired.has(s?.projectId)).map((s) => s.projectId);
+    if (dropped.length) ctx.logger.info("memory sharing: dropping shares of archived projects", { companyId, projectIds: dropped });
+    const kept = submitted.filter((s) => !retired.has(s?.projectId));
     const problems = [];
-    const shares = normalizeShares(params.shares, { knownProjects: known, onInvalid: (m) => problems.push(m) });
+    const shares = normalizeShares(kept, { knownProjects: known, onInvalid: (m) => problems.push(m) });
     if (problems.length) throw new Error(`Sharing not saved: ${problems.join("; ")}`);
     await ctx.state.set(SHARING_KEY(companyId), { shares, updatedAt: new Date(now()).toISOString(), updatedBy: actionCtx.actor.userId ?? null });
     ctx.logger.info("memory sharing updated", { companyId, shares: shares.map((s) => ({ projectId: s.projectId, readers: s.readers })) });
