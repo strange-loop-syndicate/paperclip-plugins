@@ -31,8 +31,15 @@ The list lives in `src/commands.ts`. Edit it, then `npm run build`.
 - **Timeout** per command. The process group is killed with SIGKILL.
 - **Output** is truncated to the last 6000 characters.
 - **`!restart-paperclip`** replies "started" first, then runs detached in its own
-  process group. Its log is `detached-restart-paperclip.log` in this folder.
-  It stops every running agent run.
+  process group. It stops every running agent run.
+  - **One server only.** It stops every `paperclipai run` server, its own ancestors
+    included, and starts one only when none runs and `:3100` is free. It passes only
+    when the new server is the only one and owns `:3100`.
+  - **Logs:** `/Users/claude/work/paperclip/restart-paperclip.log` (every run, also from
+    a terminal) and `/Users/claude/work/paperclip/detached-restart-paperclip.log` (the
+    plugin's capture of its output).
+  - **Check without restarting:** `sh scripts/restart-paperclip.sh --dry-run` lists the
+    servers it would stop and the `:3100` listener.
 
 ## Known limits
 
@@ -68,7 +75,7 @@ node /Users/claude/work/paperclip/patches/apply-all.mjs --check   # exit 0 = all
 
 ```sh
 npm install
-npm test        # unit tests, harness-based
+npm test        # unit tests, harness-based; on macOS also runs restart-paperclip.sh against a stub server
 npm run build   # dist/worker.js + dist/manifest.js
 ```
 

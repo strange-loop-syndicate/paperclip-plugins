@@ -30,6 +30,14 @@ export interface BangCommand {
 const PAPERCLIP_ROOT = "/Users/claude/work/paperclip";
 const LAB_REPO = "/Users/claude/work/workspace/lab";
 
+/**
+ * Output log of a detached command. Next to `server-detached.log`, not in the
+ * plugin folder: that folder is a git checkout, and its path moves with installs.
+ */
+export function detachedLogPath(name: string): string {
+  return `${PAPERCLIP_ROOT}/detached-${name}.log`;
+}
+
 /** Plugin root: `dist/worker.js` sits one folder below it. */
 export function pluginRoot(workerUrl: string): string {
   return new URL("..", workerUrl).pathname.replace(/\/$/, "");
