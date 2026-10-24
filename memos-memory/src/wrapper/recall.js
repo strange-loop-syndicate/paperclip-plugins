@@ -4,9 +4,10 @@
 import { normalizeContent } from "../content.js";
 import { formatMemoryBlock, DEFAULT_MAX_BLOCK_CHARS } from "../format.js";
 import { createMemosClient, recallAcrossScopes, DEFAULT_RECALL_TIMEOUT_MS, DEFAULT_TOP_K } from "../memos-client.js";
-import { parseSharedScopes, recallScopes } from "../scope.js";
+import { recallScopes } from "../scope.js";
 
 const QUERY_MAX_CHARS = 1000;
+export const DEFAULT_PLUGIN_KEY = "sls.memos-memory";
 // Recall delays every CLI start while MemOS is down, so the budget is capped:
 // a config typo like 30000 cannot turn into a 30 s stall.
 export const MAX_RECALL_TIMEOUT_MS = DEFAULT_RECALL_TIMEOUT_MS;
@@ -24,7 +25,7 @@ export function readWrapperConfig(env) {
     timeoutMs: Math.min(positiveInt(env.MEMOS_RECALL_TIMEOUT_MS, DEFAULT_RECALL_TIMEOUT_MS), MAX_RECALL_TIMEOUT_MS),
     topK: positiveInt(env.MEMOS_TOP_K, DEFAULT_TOP_K),
     maxBlockChars: positiveInt(env.MEMOS_MAX_BLOCK_CHARS, DEFAULT_MAX_BLOCK_CHARS),
-    sharedScopes: env.MEMOS_SHARED_SCOPES ?? "",
+    pluginKey: env.MEMOS_PLUGIN_KEY || DEFAULT_PLUGIN_KEY,
     paperclipApiUrl: (env.PAPERCLIP_API_URL ?? "").replace(/\/+$/, "").replace(/\/api$/, ""),
     paperclipApiKey: env.PAPERCLIP_API_KEY ?? "",
     companyId: env.PAPERCLIP_COMPANY_ID ?? "",
@@ -33,13 +34,29 @@ export function readWrapperConfig(env) {
   };
 }
 
-async function fetchIssue({ cfg, fetchImpl, signal }) {
-  const res = await fetchImpl(`${cfg.paperclipApiUrl}/api/issues/${encodeURIComponent(cfg.taskId)}`, {
+async function getJson({ cfg, fetchImpl, signal, path, label }) {
+  const res = await fetchImpl(`${cfg.paperclipApiUrl}${path}`, {
     headers: { authorization: `Bearer ${cfg.paperclipApiKey}`, accept: "application/json" },
     signal,
   });
-  if (!res.ok) throw new Error(`issue lookup HTTP ${res.status}`);
+  if (!res.ok) throw new Error(`${label} HTTP ${res.status}`);
   return res.json();
+}
+
+/**
+ * Shared projects this reader project may read, from the plugin's sharing
+ * settings. Fails closed: any error means own project only.
+ */
+async function fetchSharedScopes({ cfg, fetchImpl, signal, projectId, logger }) {
+  if (!projectId) return [];
+  try {
+    const path = `/api/plugins/${encodeURIComponent(cfg.pluginKey)}/api/recall-scopes?projectId=${encodeURIComponent(projectId)}`;
+    const json = await getJson({ cfg, fetchImpl, signal, path, label: "sharing lookup" });
+    return Array.isArray(json?.scopes) ? json.scopes.filter((s) => typeof s?.projectId === "string" && s.projectId) : [];
+  } catch (err) {
+    logger.warn(`sharing lookup failed; recalling this project only (${err.message})`);
+    return [];
+  }
 }
 
 /**
@@ -57,12 +74,12 @@ export async function recallForRun({ env, fetchImpl = globalThis.fetch, logger =
   const deadline = new AbortController();
   const timer = setTimeout(() => deadline.abort(new Error(`recall deadline ${cfg.timeoutMs}ms`)), Math.max(1, cfg.timeoutMs - (Date.now() - startedAt)));
   try {
-    const issue = await fetchIssue({ cfg, fetchImpl, signal: deadline.signal });
+    const issue = await getJson({ cfg, fetchImpl, signal: deadline.signal, path: `/api/issues/${encodeURIComponent(cfg.taskId)}`, label: "issue lookup" });
     if (!issue || issue.companyId !== cfg.companyId) return { block: "", memories: [], reason: "issue not in this company" };
 
     const query = [issue.identifier, issue.title, issue.description].filter(Boolean).join("\n").slice(0, QUERY_MAX_CHARS);
-    const sharedScopes = parseSharedScopes(cfg.sharedScopes, (msg) => logger.warn(`ignoring invalid MEMOS_SHARED_SCOPES: ${msg}`));
-    const scopes = recallScopes({ companyId: cfg.companyId, projectId: issue.projectId, agentId: cfg.agentId, sharedScopes });
+    const shared = await fetchSharedScopes({ cfg, fetchImpl, signal: deadline.signal, projectId: issue.projectId, logger });
+    const scopes = recallScopes({ companyId: cfg.companyId, projectId: issue.projectId, shared });
     const remaining = Math.max(1, cfg.timeoutMs - (Date.now() - startedAt));
     const client = createMemosClient({
       baseUrl: cfg.baseUrl,

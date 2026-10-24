@@ -142,9 +142,18 @@ export function createMemosClient({ baseUrl, apiKey = null, fetchImpl = globalTh
   };
 }
 
+// Recall order by memory type: decisions and lessons first, then outcomes and
+// facts, then anything else (older v1 memories, `note`).
+const TYPE_RANK = { decision: 0, lesson: 0, outcome: 1, fact: 1 };
+export function typeRank(kind) {
+  return TYPE_RANK[kind] ?? 2;
+}
+
 /**
  * Recall across several scopes under ONE deadline. Returns at most `topK`
- * memories, own scope first, duplicates (by normalized text) removed.
+ * memories, duplicates (by normalized text) removed, ordered by type rank;
+ * within a rank, own scope first, then search order. Memories from a shared
+ * scope carry `sharedFrom` (the source project name).
  */
 export async function recallAcrossScopes({ client, scopes, query, topK = DEFAULT_TOP_K, timeoutMs = DEFAULT_RECALL_TIMEOUT_MS, normalize }) {
   if (!client.configured || !query || scopes.length === 0) return [];
@@ -153,17 +162,20 @@ export async function recallAcrossScopes({ client, scopes, query, topK = DEFAULT
   try {
     const perScope = await Promise.all(scopes.map((scope) => client.search({ scope, query, topK, timeoutMs, signal: deadline.signal })));
     const seen = new Set();
-    const out = [];
-    for (const memories of perScope) {
+    const all = [];
+    perScope.forEach((memories, scopeIndex) => {
+      const scope = scopes[scopeIndex];
       for (const m of memories) {
         const k = normalize(m.content);
         if (seen.has(k)) continue;
         seen.add(k);
-        out.push(m);
-        if (out.length >= topK) return out;
+        all.push({ ...m, ...(scope.shared ? { sharedFrom: scope.projectName ?? scope.projectId } : {}), order: all.length });
       }
-    }
-    return out;
+    });
+    return all
+      .sort((a, b) => typeRank(a.metadata.kind) - typeRank(b.metadata.kind) || a.order - b.order)
+      .slice(0, topK)
+      .map(({ order, ...m }) => m);
   } finally {
     clearTimeout(timer);
   }

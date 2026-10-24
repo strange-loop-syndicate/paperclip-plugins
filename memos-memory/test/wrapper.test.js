@@ -86,6 +86,8 @@ beforeEach(() => {
   server.state.issueMode = "ok";
   server.state.store.length = 0;
   server.state.requests.length = 0;
+  server.state.sharedScopes = {};
+  server.state.sharingMode = "ok";
   seedMemory(server.state, { companyId: A, projectId: "p1", content: "Deploys go through the DevOps agent", info: { kind: "lesson", issueIdentifier: "SLS-0" } });
   seedMemory(server.state, { companyId: A, projectId: "p2", content: "Other project memory" });
   seedMemory(server.state, { companyId: B, projectId: "p1", content: "Company B memory" });
@@ -135,12 +137,32 @@ describe("pre-prompt recall wrapper: ordering", () => {
     assert.equal(issueLookup.headers.authorization, "Bearer run-jwt");
   });
 
-  it("sharing allowlist adds same-company scopes only", async () => {
-    const shared = JSON.stringify([{ companyId: A, projectId: "p2" }, { companyId: B, projectId: "p1" }]);
-    const r = await runWrapper("codex", ["exec", "-"], { env: { MEMOS_SHARED_SCOPES: shared } });
-    assert.match(r.received.stdin, /Other project memory/);
+  it("reads sharing from the plugin route and labels shared memories with their project", async () => {
+    server.state.sharedScopes.p1 = [{ projectId: "p2", projectName: "Ops" }];
+    const r = await runWrapper("codex", ["exec", "-"]);
+    assert.match(r.received.stdin, /Other project memory \(shared from project "Ops"\)/);
     assert.doesNotMatch(r.received.stdin, /Company B memory/);
+    const lookup = server.state.requests.find((q) => q.path.startsWith("/api/plugins/"));
+    assert.equal(lookup.path, "/api/plugins/sls.memos-memory/api/recall-scopes?projectId=p1");
+    assert.equal(lookup.headers.authorization, "Bearer run-jwt");
+    const searches = server.memosRequests().filter((q) => q.path === "/product/search");
+    assert.deepEqual(searches.map((s) => s.body.user_id), [`paperclip-${A}`, `paperclip-${A}`]);
   });
+
+  it("ignores the retired MEMOS_SHARED_SCOPES env", async () => {
+    const shared = JSON.stringify([{ companyId: A, projectId: "p2" }]);
+    const r = await runWrapper("codex", ["exec", "-"], { env: { MEMOS_SHARED_SCOPES: shared } });
+    assert.doesNotMatch(r.received.stdin, /Other project memory/);
+  });
+
+  it("a failing sharing lookup recalls the own project only, and still starts the CLI", async () => {
+    server.state.sharedScopes.p1 = [{ projectId: "p2", projectName: "Ops" }];
+    server.state.sharingMode = "error500";
+    const r = await runWrapper("claude", ["--print"]);
+    assert.match(r.received.stdin, /Deploys go through the DevOps agent/);
+    assert.doesNotMatch(r.received.stdin, /Other project memory/);
+  });
+
 });
 
 describe("pre-prompt recall wrapper: fails open", () => {

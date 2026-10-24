@@ -2,13 +2,15 @@ import assert from "node:assert/strict";
 import { after, before, beforeEach, describe, it } from "node:test";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import manifest from "../src/manifest.js";
-import { createMemoryPlugin } from "../src/plugin.js";
+import { createMemoryPlugin, RETRY_JOB_KEY } from "../src/plugin.js";
 import { deadUrl, seedMemory, startFakeServer } from "./helpers/fake-servers.js";
 
 const A = "company-a";
 const B = "company-b";
+const BODY = "We decided to run pre-prompt recall in a command wrapper.\n\n```js\nconst secret = 'CODE-ONLY-TOKEN';\n```\n\nTests pass.";
 
 const issue = (over = {}) => ({ id: "iss-1", companyId: A, projectId: "p1", identifier: "SLS-1", title: "Build memory", status: "in_progress", ...over });
+const project = (id, name, companyId = A) => ({ id, companyId, name, archivedAt: null });
 const comment = (over = {}) => ({
   id: "c-1",
   companyId: A,
@@ -17,7 +19,7 @@ const comment = (over = {}) => ({
   authorAgentId: "agent-1",
   authorUserId: null,
   createdByRunId: "run-1",
-  body: "**Decision:** use a command wrapper for pre-prompt recall\n- Lesson: plugin events are fire-and-forget",
+  body: BODY,
   presentation: null,
   metadata: null,
   createdAt: new Date(),
@@ -25,316 +27,463 @@ const comment = (over = {}) => ({
   ...over,
 });
 
-function commentEvent(over = {}) {
+function commentEvent(over = {}, payload = {}) {
   return [
-    { commentId: "c-1", bodySnippet: "…", identifier: "SLS-1", agentId: "agent-1", runId: "run-1" },
+    { commentId: "c-1", bodySnippet: "…", identifier: "SLS-1", agentId: "agent-1", runId: "run-1", ...payload },
     { companyId: A, actorType: "agent", actorId: "agent-1", entityId: "iss-1", entityType: "issue", eventId: "evt-1", ...over },
   ];
 }
+const boardEvent = (commentId = "c-board") => commentEvent({ actorType: "user", actorId: "user-1", eventId: `evt-${commentId}` }, { commentId, agentId: null, runId: null });
 
-async function setup(server, config = {}, seed = {}) {
-  const harness = createTestHarness({ manifest, config: { memosBaseUrl: server.url, recallTimeoutMs: 500, captureTimeoutMs: 500, ...config } });
-  harness.seed({ issues: [issue()], issueComments: [comment()], ...seed });
-  const plugin = createMemoryPlugin();
+function clock(start = Date.parse("2026-10-24T10:00:00Z")) {
+  let t = start;
+  const now = () => t;
+  now.advance = (ms) => (t += ms);
+  return now;
+}
+
+async function setup(server, config = {}, seed = {}, { now } = {}) {
+  const harness = createTestHarness({
+    manifest,
+    config: {
+      memosBaseUrl: server.url,
+      openrouterBaseUrl: server.url,
+      openrouterApiKeyRef: "openrouter-key",
+      captureMode: "save",
+      recallTimeoutMs: 500,
+      captureTimeoutMs: 500,
+      jevTimeoutMs: 500,
+      extractTimeoutMs: 500,
+      ...config,
+    },
+  });
+  harness.seed({ issues: [issue()], issueComments: [comment()], projects: [project("p1", "Memory"), project("p2", "Ops")], ...seed });
+  const plugin = createMemoryPlugin({ now, sleep: async () => {} });
   await plugin.definition.setup(harness.ctx);
+  harness.plugin = plugin;
   return harness;
 }
 
 const adds = (server) => server.memosRequests().filter((r) => r.path === "/product/add");
+const jevCalls = (server) => server.llmRequests("/systemone");
+const extractCalls = (server) => server.llmRequests("/chat/completions");
 const runCtx = (over = {}) => ({ agentId: "agent-1", runId: "run-9", companyId: A, projectId: "p1", ...over });
+const pendingOf = (h) => h.getState({ scopeKind: "instance", namespace: "memos-pending", stateKey: "queue" }) ?? [];
+const api = (h, routeKey, query, companyId = A) => h.plugin.definition.onApiRequest({ routeKey, method: "GET", path: `/${routeKey}`, params: {}, query, body: null, actor: { actorType: "agent", actorId: "agent-1" }, companyId, headers: {} });
 
-describe("plugin capture", () => {
+function resetServer(server) {
+  server.state.mode = "ok";
+  server.state.store.length = 0;
+  server.state.requests.length = 0;
+  server.state.llm.mode = "ok";
+  server.state.llm.chatMode = "ok";
+  server.state.llm.answers = { decision: 0.9, lesson: 0.1, outcome: 0.2, fact: 0.1, routine: 0.1 };
+  server.state.llm.memories = [{ type: "decision", text: "Pre-prompt recall runs in a command wrapper, not a plugin hook." }];
+}
+
+describe("capture: Jev gate and extraction", () => {
   let server;
   before(async () => (server = await startFakeServer()));
   after(() => server.close());
-  beforeEach(() => {
-    server.state.mode = "ok";
-    server.state.store.length = 0;
-    server.state.requests.length = 0;
-  });
+  beforeEach(() => resetServer(server));
 
-  it("stores labelled memories from an agent comment with full metadata", async () => {
+  it("stores the extracted short memory, never the comment text, with every ID", async () => {
     const h = await setup(server);
     await h.emit("issue.comment.created", ...commentEvent());
     const stored = adds(server).map((r) => r.body);
-    assert.equal(stored.length, 2);
-    assert.equal(stored[0].memory_content, "use a command wrapper for pre-prompt recall");
-    assert.equal(stored[0].user_id, `paperclip-${A}`);
+    assert.equal(stored.length, 1);
+    assert.equal(stored[0].memory_content, "Pre-prompt recall runs in a command wrapper, not a plugin hook.");
+    assert.notEqual(stored[0].memory_content, BODY);
+    assert.equal(stored[0].mode, "fast");
     assert.equal(stored[0].mem_cube_id, `paperclip-${A}-p1`);
     const info = stored[0].info;
-    for (const key of ["companyId", "projectId", "agentId", "issueId", "issueIdentifier", "runId", "kind", "contentHash"]) {
+    for (const key of ["companyId", "projectId", "agentId", "issueId", "issueIdentifier", "commentId", "runId", "kind", "contentHash"]) {
       assert.ok(info[key], `metadata.${key} is set`);
     }
     assert.equal(info.kind, "decision");
-    assert.equal(stored[1].info.kind, "lesson");
+    assert.equal(info.commentId, "c-1");
+    assert.equal(info.authorType, "agent");
   });
 
-  it("is idempotent across sequential event redelivery", async () => {
+  it("captures board comments too, attributed to the board user", async () => {
+    const h = await setup(server, {}, { issueComments: [comment({ id: "c-board", authorType: "user", authorAgentId: null, authorUserId: "user-1", createdByRunId: null })] });
+    await h.emit("issue.comment.created", ...boardEvent());
+    const stored = adds(server).map((r) => r.body);
+    assert.equal(stored.length, 1);
+    assert.equal(stored[0].info.authorType, "user");
+    assert.equal(stored[0].info.userId, "user-1");
+    assert.equal(stored[0].info.commentId, "c-board");
+    assert.equal(jevCalls(server)[0].body.state.item.source, "board comment");
+  });
+
+  it("cuts code blocks before Jev and the extractor see the text", async () => {
     const h = await setup(server);
     await h.emit("issue.comment.created", ...commentEvent());
-    await h.emit("issue.comment.created", ...commentEvent({ eventId: "evt-redelivered" }));
-    assert.equal(adds(server).length, 2);
+    const sent = JSON.stringify([jevCalls(server)[0].body, extractCalls(server)[0].body]);
+    assert.doesNotMatch(sent, /CODE-ONLY-TOKEN/);
+    assert.match(jevCalls(server)[0].body.state.item.text, /command wrapper/);
+    assert.equal(jevCalls(server)[0].body.model, "typesafe/jev-1.13");
   });
 
-  it("is idempotent across concurrent event redelivery (in-flight lock)", async () => {
+  it("skips an item below saveP without calling the extractor", async () => {
+    server.state.llm.answers = { decision: 0.69, lesson: 0.2, outcome: 0.3, fact: 0.4, routine: 0.1 };
+    const h = await setup(server);
+    await h.emit("issue.comment.created", ...commentEvent());
+    assert.equal(jevCalls(server).length, 1);
+    assert.equal(extractCalls(server).length, 0);
+    assert.equal(adds(server).length, 0);
+  });
+
+  it("skips routine status even when a content question is high", async () => {
+    server.state.llm.answers = { decision: 0.95, lesson: 0.1, outcome: 0.1, fact: 0.1, routine: 0.6 };
+    const h = await setup(server);
+    await h.emit("issue.comment.created", ...commentEvent());
+    assert.equal(extractCalls(server).length, 0);
+    assert.equal(adds(server).length, 0);
+  });
+
+  it("honours a configured saveP", async () => {
+    server.state.llm.answers = { decision: 0.6, lesson: 0.1, outcome: 0.1, fact: 0.1, routine: 0.1 };
+    const h = await setup(server, { saveP: 0.55 });
+    await h.emit("issue.comment.created", ...commentEvent());
+    assert.equal(adds(server).length, 1);
+  });
+
+  it("an empty extraction saves nothing", async () => {
+    server.state.llm.memories = [];
+    const h = await setup(server);
+    await h.emit("issue.comment.created", ...commentEvent());
+    assert.equal(adds(server).length, 0);
+  });
+
+  it("is idempotent across redelivery and the run event for the same comment", async () => {
+    const h = await setup(server);
+    await h.emit("issue.comment.created", ...commentEvent());
+    await h.emit("issue.comment.created", ...commentEvent({ eventId: "evt-again" }));
+    await h.emit("agent.run.finished", { runId: "run-1", agentId: "agent-1", issueId: "iss-1" }, { companyId: A, actorType: "agent" });
+    assert.equal(jevCalls(server).length, 1);
+    assert.equal(adds(server).length, 1);
+  });
+
+  it("is idempotent across concurrent redelivery", async () => {
     const h = await setup(server);
     await Promise.all([h.emit("issue.comment.created", ...commentEvent()), h.emit("issue.comment.created", ...commentEvent({ eventId: "evt-2" }))]);
-    assert.equal(adds(server).length, 2);
+    assert.equal(jevCalls(server).length, 1);
+    assert.equal(adds(server).length, 1);
   });
 
-  it("captureProjectIds limits comment, run and retain capture to the listed projects", async () => {
-    const off = await setup(server, { captureProjectIds: ["p2"] });
-    await off.emit("issue.comment.created", ...commentEvent());
-    await off.emit("agent.run.finished", { runId: "run-1", agentId: "agent-1", issueId: "iss-1" }, { companyId: A, actorType: "agent" });
-    const refused = await off.executeTool("memory_retain", { content: "p1 note while capture is off" }, runCtx());
-    assert.equal(refused.data.status, "rejected");
-    assert.equal(adds(server).length, 0);
+  it("gates the run's newest agent comment as its result", async () => {
+    const old = comment({ id: "c-old", body: "Older note from the same run, long enough to count.", createdAt: new Date("2026-01-01T00:00:00Z") });
+    const last = comment({ id: "c-last", body: "Final result: the wrapper ships and recall works in Codex.", createdAt: new Date("2026-01-01T00:05:00Z") });
+    const h = await setup(server, { captureComments: false }, { issueComments: [last, old] });
+    await h.emit("agent.run.finished", { runId: "run-1", agentId: "agent-1", issueId: "iss-1" }, { companyId: A, actorType: "agent" });
+    assert.equal(jevCalls(server).length, 1);
+    assert.match(jevCalls(server)[0].body.state.item.text, /Final result/);
+    assert.equal(jevCalls(server)[0].body.state.item.source, "run result");
+    assert.equal(adds(server)[0].body.info.commentId, "c-last");
+    assert.equal(adds(server)[0].body.info.source, "agent.run.finished");
+  });
 
+  it("dedups the same extracted memory per scope", async () => {
+    const h = await setup(server, {}, { issueComments: [comment(), comment({ id: "c-2" })] });
+    await h.emit("issue.comment.created", ...commentEvent());
+    await h.emit("issue.comment.created", ...commentEvent({ eventId: "evt-c2" }, { commentId: "c-2" }));
+    assert.equal(jevCalls(server).length, 2);
+    assert.equal(adds(server).length, 1);
+  });
+
+  it("keeps at most three memories per item and drops malformed ones", async () => {
+    server.state.llm.memories = [
+      { type: "decision", text: "First decision about the wrapper path." },
+      { type: "bogus", text: "A fact with an unknown type label." },
+      { type: "lesson", text: "x" },
+      { type: "outcome", text: "The import landed in memos-memory/." },
+      { type: "fact", text: "A fourth memory that must be cut." },
+    ];
+    const h = await setup(server);
+    await h.emit("issue.comment.created", ...commentEvent());
+    const stored = adds(server).map((r) => [r.body.info.kind, r.body.memory_content]);
+    assert.deepEqual(stored.map(([k]) => k).sort(), ["decision", "fact", "outcome"]);
+  });
+
+  it("does nothing without an OpenRouter key", async () => {
+    const h = await setup(server, { openrouterApiKeyRef: "" });
+    await h.emit("issue.comment.created", ...commentEvent());
+    assert.equal(jevCalls(server).length, 0);
+    assert.equal(adds(server).length, 0);
+  });
+
+  it("ignores system comments", async () => {
+    const h = await setup(server);
+    await h.emit("issue.comment.created", ...commentEvent({ actorType: "system", actorId: "sys" }));
+    assert.equal(jevCalls(server).length, 0);
+  });
+
+  it("captureProjectIds limits capture and retain to the listed projects", async () => {
+    const off = await setup(server, { captureProjectIds: ["p-other"] });
+    await off.emit("issue.comment.created", ...commentEvent());
+    const r = await off.executeTool("memory_retain", { content: "Off-project retain" }, runCtx());
+    assert.equal(r.data.status, "rejected");
+    assert.equal(jevCalls(server).length, 0);
     const on = await setup(server, { captureProjectIds: ["p1"] });
     await on.emit("issue.comment.created", ...commentEvent());
-    assert.equal(adds(server).length, 2);
-  });
-
-  it("takes the run's newest agent comment as the outcome summary, whatever order the host lists them in", async () => {
-    const at = (s) => new Date(`2026-10-23T10:00:${s}Z`);
-    const h = await setup(server, {}, {
-      // Mixed host order; the newest comment on the run is a user's and must be skipped.
-      issueComments: [
-        comment({ id: "c-1", body: "Starting work on it.", createdAt: at("10") }),
-        comment({ id: "c-4", authorType: "user", authorAgentId: null, authorUserId: "u-1", body: "User says hi.", createdAt: at("40") }),
-        comment({ id: "c-3", body: "Done. All tests pass.", createdAt: at("30") }),
-        comment({ id: "c-2", body: "Halfway there.", createdAt: at("20") }),
-      ],
-    });
-    await h.emit("agent.run.finished", { runId: "run-1", agentId: "agent-1", issueId: "iss-1" }, { companyId: A, actorType: "agent" });
-    assert.match(adds(server)[0].body.memory_content, /Summary: Done\. All tests pass\.$/);
-  });
-
-  it("calls MemOS with the worker's own fetch, not ctx.http.fetch (the host blocks private IPs)", async () => {
-    const h = await setup(server);
-    h.ctx.http.fetch = async () => {
-      throw new Error("All resolved IPs for 127.0.0.1 are in private/reserved ranges");
-    };
-    await h.emit("issue.comment.created", ...commentEvent());
-    assert.equal(adds(server).length, 2);
-  });
-
-  it("dedups by normalized content per scope, not across scopes", async () => {
-    const h = await setup(server, {}, {
-      issues: [issue(), issue({ id: "iss-2", identifier: "SLS-2" }), issue({ id: "iss-3", projectId: "p2", identifier: "SLS-3" })],
-      issueComments: [
-        comment(),
-        comment({ id: "c-2", issueId: "iss-2", body: "Decision:  USE a command wrapper for **pre-prompt** recall." }),
-        comment({ id: "c-3", issueId: "iss-3", body: "Decision: use a command wrapper for pre-prompt recall" }),
-      ],
-    });
-    await h.emit("issue.comment.created", ...commentEvent());
-    await h.emit("issue.comment.created", { commentId: "c-2", agentId: "agent-1" }, { companyId: A, actorType: "agent", actorId: "agent-1", entityId: "iss-2" });
-    await h.emit("issue.comment.created", { commentId: "c-3", agentId: "agent-1" }, { companyId: A, actorType: "agent", actorId: "agent-1", entityId: "iss-3" });
-    const decisions = adds(server).filter((r) => r.body.info.kind === "decision");
-    assert.deepEqual(decisions.map((r) => r.body.mem_cube_id), [`paperclip-${A}-p1`, `paperclip-${A}-p2`]);
-  });
-
-  it("ignores comments written by users", async () => {
-    const h = await setup(server, {}, { issueComments: [comment({ authorType: "user", authorAgentId: null, authorUserId: "u-1" })] });
-    await h.emit("issue.comment.created", { commentId: "c-1", agentId: null }, { companyId: A, actorType: "user", actorId: "u-1", entityId: "iss-1" });
-    assert.equal(adds(server).length, 0);
-  });
-
-  it("stores one task outcome per finished run", async () => {
-    const h = await setup(server, {}, {
-      issueComments: [comment({ body: "Done. Wrapper and plugin implemented, 30 tests pass." })],
-    });
-    const payload = { runId: "run-1", agentId: "agent-1", issueId: "iss-1", status: "succeeded" };
-    const base = { companyId: A, actorType: "agent", actorId: "agent-1", entityId: "run-1", entityType: "heartbeat_run" };
-    await h.emit("agent.run.finished", payload, base);
-    await h.emit("agent.run.finished", payload, { ...base, eventId: "again" });
-    const outcomes = adds(server).filter((r) => r.body.info.kind === "outcome");
-    assert.equal(outcomes.length, 1);
-    assert.match(outcomes[0].body.memory_content, /^Run finished on SLS-1 "Build memory"\. .*Summary: Done\. Wrapper and plugin implemented/);
-    assert.equal(outcomes[0].body.info.runId, "run-1");
-  });
-
-  it("dedups identical outcomes from different runs by content", async () => {
-    const h = await setup(server, {}, { issueComments: [] });
-    for (const runId of ["r1", "r2", "r3"]) {
-      await h.emit("agent.run.finished", { runId, agentId: "agent-1", issueId: "iss-1" }, { companyId: A, actorType: "agent", eventId: `e-${runId}` });
-    }
-    const outcomes = adds(server).filter((r) => r.body.info.kind === "outcome");
-    assert.equal(outcomes.length, 1);
-    assert.equal(outcomes[0].body.info.runId, "r1");
-  });
-
-  it("a redelivered run event with a changed issue status stays one outcome", async () => {
-    const h = await setup(server, {}, { issueComments: [] });
-    const payload = { runId: "run-1", agentId: "agent-1", issueId: "iss-1" };
-    await h.emit("agent.run.finished", payload, { companyId: A, actorType: "agent" });
-    h.ctx.issues.get = async () => issue({ status: "done" });
-    await h.emit("agent.run.finished", payload, { companyId: A, actorType: "agent", eventId: "again" });
     assert.equal(adds(server).length, 1);
-  });
-
-  it("stores at most 20 memories from one comment", async () => {
-    const body = Array.from({ length: 25 }, (_, i) => `Lesson: distinct engineering lesson number ${i}`).join("\n");
-    const h = await setup(server, {}, { issueComments: [comment({ body })] });
-    await h.emit("issue.comment.created", ...commentEvent());
-    assert.equal(adds(server).length, 20);
-  });
-
-  it("one failing state write does not skip the comment's other memories", async () => {
-    const h = await setup(server);
-    const realSet = h.ctx.state.set.bind(h.ctx.state);
-    let calls = 0;
-    h.ctx.state.set = async (...args) => {
-      if (calls++ === 0) throw new Error("state store unavailable");
-      return realSet(...args);
-    };
-    await h.emit("issue.comment.created", ...commentEvent());
-    assert.equal(adds(server).length, 2);
-    assert.ok(h.logs.some((l) => l.level === "warn" && /dedup marker not saved.*state store unavailable/.test(l.message)));
-  });
-
-  it("memory_retain reports stored when the memory was added but its dedup marker failed", async () => {
-    const h = await setup(server);
-    h.ctx.state.set = async () => {
-      throw new Error("state store unavailable");
-    };
-    const res = await h.executeTool("memory_retain", { content: "Use pnpm in the web repo" }, runCtx());
-    assert.equal(res.data.status, "stored");
-    assert.equal(adds(server).length, 1);
-    assert.ok(h.logs.some((l) => l.level === "warn" && /dedup marker not saved/.test(l.message)));
   });
 
   it("never uses an issue from another company, even if the host returns one", async () => {
-    const h = await setup(server);
-    h.ctx.issues.get = async () => issue({ companyId: B });
+    const h = await setup(server, {}, { issues: [issue({ companyId: B })] });
     await h.emit("issue.comment.created", ...commentEvent());
     await h.emit("agent.run.finished", { runId: "run-1", agentId: "agent-1", issueId: "iss-1" }, { companyId: A, actorType: "agent" });
+    assert.equal(jevCalls(server).length, 0);
     assert.equal(adds(server).length, 0);
   });
 });
 
-describe("plugin tools", () => {
+describe("capture: shadow mode", () => {
+  let server;
+  before(async () => (server = await startFakeServer()));
+  after(() => server.close());
+  beforeEach(() => resetServer(server));
+
+  it("is the default: logs verdicts and extracted memories, saves nothing", async () => {
+    const now = clock();
+    const h = await setup(server, { captureMode: undefined }, { issueComments: [comment(), comment({ id: "c-2" })] }, { now });
+    await h.emit("issue.comment.created", ...commentEvent());
+    server.state.llm.answers = { decision: 0.1, lesson: 0.1, outcome: 0.1, fact: 0.1, routine: 0.9 };
+    await h.emit("issue.comment.created", ...commentEvent({ eventId: "evt-c2" }, { commentId: "c-2" }));
+    assert.equal(adds(server).length, 0);
+    const res = await api(h, "shadow-log", { date: "2026-10-24" });
+    assert.equal(res.status, 200);
+    const verdicts = res.body.entries.map((e) => [e.commentId, e.verdict]);
+    assert.deepEqual(verdicts, [["c-1", "pass"], ["c-2", "skip"]]);
+    const pass = res.body.entries[0];
+    assert.deepEqual(pass.memories, [{ type: "decision", content: "Pre-prompt recall runs in a command wrapper, not a plugin hook." }]);
+    assert.equal(pass.type, "decision");
+    assert.equal(pass.jevCostUsd, 0.0001);
+    assert.equal(pass.extractCostUsd, 0.0002);
+    assert.ok(pass.probs.decision >= 0.9);
+    assert.doesNotMatch(JSON.stringify(res.body), /Tests pass/, "the shadow log holds no comment text");
+  });
+
+  it("the shadow log is per company", async () => {
+    const now = clock();
+    const h = await setup(server, { captureMode: "shadow" }, {}, { now });
+    await h.emit("issue.comment.created", ...commentEvent());
+    const other = await api(h, "shadow-log", { date: "2026-10-24" }, B);
+    assert.deepEqual(other.body.entries, []);
+  });
+});
+
+describe("capture: outages wait in a retry queue", () => {
+  let server;
+  before(async () => (server = await startFakeServer()));
+  after(() => server.close());
+  beforeEach(() => resetServer(server));
+
+  it("Jev down: the item waits with IDs only, and the retry job stores it later", async () => {
+    const now = clock();
+    server.state.llm.mode = "error500";
+    const h = await setup(server, {}, {}, { now });
+    await h.emit("issue.comment.created", ...commentEvent());
+    assert.equal(adds(server).length, 0);
+    const queue = pendingOf(h);
+    assert.equal(queue.length, 1);
+    assert.equal(queue[0].commentId, "c-1");
+    assert.doesNotMatch(JSON.stringify(queue), /command wrapper/, "the queue holds no comment text");
+    assert.equal(jevCalls(server).length, 3, "three tries");
+
+    server.state.llm.mode = "ok";
+    await h.runJob(RETRY_JOB_KEY);
+    assert.equal(adds(server).length, 0, "not due yet");
+    now.advance(11 * 60 * 1000);
+    await h.runJob(RETRY_JOB_KEY);
+    assert.equal(adds(server).length, 1);
+    assert.equal(pendingOf(h).length, 0);
+  });
+
+  it("extractor down: the item waits", async () => {
+    server.state.llm.chatMode = "error503";
+    const h = await setup(server);
+    await h.emit("issue.comment.created", ...commentEvent());
+    assert.equal(extractCalls(server).length, 3, "three tries");
+    assert.equal(adds(server).length, 0);
+    assert.equal(pendingOf(h).length, 1);
+    assert.match(pendingOf(h)[0].lastError, /extractor/);
+  });
+
+  it("drops an item after 24 h of retries", async () => {
+    const now = clock();
+    server.state.llm.mode = "error500";
+    const h = await setup(server, {}, {}, { now });
+    await h.emit("issue.comment.created", ...commentEvent());
+    assert.equal(pendingOf(h).length, 1);
+    now.advance(24 * 60 * 60 * 1000 + 1);
+    await h.runJob(RETRY_JOB_KEY);
+    assert.equal(pendingOf(h).length, 0);
+    assert.ok(h.logs.some((l) => /dropped after 24 h/.test(l.message)));
+  });
+
+  it("MemOS down in save mode: the item waits and is not marked done", async () => {
+    const now = clock();
+    server.state.mode = "error500";
+    const h = await setup(server, {}, {}, { now });
+    await h.emit("issue.comment.created", ...commentEvent());
+    assert.equal(pendingOf(h).length, 1);
+    server.state.mode = "ok";
+    now.advance(11 * 60 * 1000);
+    await h.runJob(RETRY_JOB_KEY);
+    assert.equal(server.state.store.length, 1);
+    assert.equal(pendingOf(h).length, 0);
+  });
+
+  it("a bad key fails fast without retries and waits", async () => {
+    server.state.llm.mode = "error401";
+    const h = await setup(server);
+    await h.emit("issue.comment.created", ...commentEvent());
+    assert.equal(jevCalls(server).length, 1);
+    assert.equal(pendingOf(h).length, 1);
+  });
+});
+
+describe("plugin tools and sharing", () => {
   let server;
   before(async () => (server = await startFakeServer()));
   after(() => server.close());
   beforeEach(() => {
-    server.state.mode = "ok";
-    server.state.store.length = 0;
-    server.state.requests.length = 0;
-    seedMemory(server.state, { companyId: A, projectId: "p1", content: "A/p1: deploys go through DevOps", info: { kind: "lesson" } });
-    seedMemory(server.state, { companyId: A, projectId: "p2", content: "A/p2: staging uses port 8443", info: { kind: "lesson" } });
-    seedMemory(server.state, { companyId: B, projectId: "p1", content: "B/p1: secret plans of company B", info: { kind: "decision" } });
+    resetServer(server);
+    seedMemory(server.state, { companyId: A, projectId: "p1", content: "Own project outcome", info: { kind: "outcome" } });
+    seedMemory(server.state, { companyId: A, projectId: "p1", content: "Own project lesson", info: { kind: "lesson" } });
+    seedMemory(server.state, { companyId: A, projectId: "p2", content: "Shared project decision", info: { kind: "decision", issueIdentifier: "OPS-3" } });
+    seedMemory(server.state, { companyId: B, projectId: "p1", content: "Company B memory" });
   });
+
+  const board = { actor: { type: "user", userId: "user-1" }, companyId: A };
 
   it("memory_recall reads only the caller's company + project by default", async () => {
     const h = await setup(server);
-    const res = await h.executeTool("memory_recall", { query: "deploys" }, runCtx());
-    assert.deepEqual(res.data.memories.map((m) => m.content), ["A/p1: deploys go through DevOps"]);
+    const r = await h.executeTool("memory_recall", { query: "anything" }, runCtx());
+    assert.deepEqual(r.data.memories.map((m) => m.content), ["Own project lesson", "Own project outcome"]);
   });
 
-  it("memory_recall adds same-company scopes only when allowlisted", async () => {
-    const h = await setup(server, { sharedScopes: [{ companyId: A, projectId: "p2" }, { companyId: B, projectId: "p1" }] });
-    const res = await h.executeTool("memory_recall", { query: "anything" }, runCtx());
-    assert.deepEqual(res.data.memories.map((m) => m.content).sort(), ["A/p1: deploys go through DevOps", "A/p2: staging uses port 8443"]);
-    const cubes = server.memosRequests().map((r) => r.body.mem_cube_id);
-    assert.ok(!cubes.some((c) => c.includes(B)), "no request ever names company B");
+  it("recall puts decisions and lessons before outcomes and facts", async () => {
+    const h = await setup(server);
+    await h.performAction("save-sharing", { shares: [{ projectId: "p2", readers: ["p1"] }] }, board);
+    const r = await h.executeTool("memory_recall", { query: "anything" }, runCtx());
+    assert.deepEqual(r.data.memories.map((m) => m.kind), ["lesson", "decision", "outcome"]);
+  });
+
+  it("a shared project's memories are labelled with their source project", async () => {
+    const h = await setup(server);
+    await h.performAction("save-sharing", { shares: [{ projectId: "p2", readers: ["p1"] }] }, board);
+    const r = await h.executeTool("memory_recall", { query: "anything" }, runCtx());
+    const shared = r.data.memories.find((m) => m.content === "Shared project decision");
+    assert.equal(shared.sharedFrom, "Ops");
+    assert.match(r.content, /Shared project decision \(OPS-3, shared from project "Ops"\)/);
+    assert.doesNotMatch(r.content, /Own project lesson \(/);
+  });
+
+  it("sharing is opt-in per reader project; 'all' admits every project", async () => {
+    const h = await setup(server, {}, { projects: [project("p1", "Memory"), project("p2", "Ops"), project("p3", "Lab")] });
+    await h.performAction("save-sharing", { shares: [{ projectId: "p2", readers: ["p3"] }] }, board);
+    let r = await h.executeTool("memory_recall", { query: "anything" }, runCtx());
+    assert.ok(!r.data.memories.some((m) => m.content === "Shared project decision"));
+    await h.performAction("save-sharing", { shares: [{ projectId: "p2", readers: "all" }] }, board);
+    r = await h.executeTool("memory_recall", { query: "anything" }, runCtx());
+    assert.ok(r.data.memories.some((m) => m.content === "Shared project decision"));
+  });
+
+  it("only a board user can save sharing, and only for this company's projects", async () => {
+    const h = await setup(server);
+    await assert.rejects(h.performAction("save-sharing", { shares: [{ projectId: "p2", readers: "all" }] }, { actor: { type: "agent", agentId: "agent-1" }, companyId: A }), /board user/);
+    await assert.rejects(h.performAction("save-sharing", { shares: [{ projectId: "p-foreign", readers: "all" }] }, board), /not in this company/);
+    const data = await h.getData("sharing-settings", { companyId: A });
+    assert.deepEqual(data.shares, []);
+    assert.deepEqual(data.projects.map((p) => p.name).sort(), ["Memory", "Ops"]);
+  });
+
+  it("archiving a shared project does not lock the sharing page", async () => {
+    const h = await setup(server, {}, { projects: [project("p1", "Memory"), project("p2", "Ops"), project("p3", "Lab")] });
+    await h.performAction("save-sharing", { shares: [{ projectId: "p2", readers: ["p1"] }, { projectId: "p1", readers: ["p3"] }] }, board);
+    h.seed({ projects: [{ ...project("p2", "Ops"), archivedAt: new Date() }] });
+    // The page still holds p2's share and p2 as a reader, and sends them back.
+    const saved = await h.performAction("save-sharing", { shares: [{ projectId: "p2", readers: ["p1"] }, { projectId: "p1", readers: ["p3", "p2"] }, { projectId: "p3", readers: ["p1"] }] }, board);
+    const expected = [{ projectId: "p1", projectName: "Memory", readers: ["p3"] }, { projectId: "p3", projectName: "Lab", readers: ["p1"] }];
+    assert.deepEqual(saved.shares, expected);
+    assert.deepEqual((await h.getData("sharing-settings", { companyId: A })).shares, expected);
+    await assert.rejects(h.performAction("save-sharing", { shares: [{ projectId: "p-foreign", readers: "all" }] }, board), /not in this company/);
+  });
+
+  it("a shared project the host no longer lists is dropped, not refused", async () => {
+    const h = await setup(server, {}, { projects: [project("p1", "Memory"), project("p2", "Ops"), project("p3", "Lab")] });
+    await h.performAction("save-sharing", { shares: [{ projectId: "p3", readers: ["p1"] }] }, board);
+    h.seed({ projects: [project("p3", "Lab", B)] });
+    const saved = await h.performAction("save-sharing", { shares: [{ projectId: "p3", readers: ["p1"] }, { projectId: "p2", readers: ["p1"] }] }, board);
+    assert.deepEqual(saved.shares, [{ projectId: "p2", projectName: "Ops", readers: ["p1"] }]);
+  });
+
+  it("the settings page round-trips sharing", async () => {
+    const h = await setup(server);
+    await h.performAction("save-sharing", { shares: [{ projectId: "p2", readers: ["p1"] }, { projectId: "p1", readers: [] }] }, board);
+    const data = await h.getData("sharing-settings", { companyId: A });
+    assert.deepEqual(data.shares, [{ projectId: "p2", projectName: "Ops", readers: ["p1"] }]);
+  });
+
+  it("the recall-scopes route answers what a reader project may read, per company", async () => {
+    const h = await setup(server);
+    await h.performAction("save-sharing", { shares: [{ projectId: "p2", readers: ["p1"] }] }, board);
+    assert.deepEqual((await api(h, "recall-scopes", { projectId: "p1" })).body.scopes, [{ projectId: "p2", projectName: "Ops" }]);
+    assert.deepEqual((await api(h, "recall-scopes", { projectId: "p2" })).body.scopes, []);
+    assert.deepEqual((await api(h, "recall-scopes", { projectId: "p1" }, B)).body.scopes, []);
   });
 
   it("memory_recall drops results whose metadata names another company", async () => {
-    server.state.store.push({ userId: `paperclip-${A}`, cubeId: `paperclip-${A}-p1`, content: "leaked", info: { companyId: B } });
+    server.state.store.push({ userId: `paperclip-${A}`, cubeId: `paperclip-${A}-p1`, content: "Leaked", info: { companyId: B, projectId: "p1" } });
     const h = await setup(server);
-    const res = await h.executeTool("memory_recall", { query: "x" }, runCtx());
-    assert.ok(!res.data.memories.some((m) => m.content === "leaked"));
+    const r = await h.executeTool("memory_recall", { query: "anything" }, runCtx());
+    assert.ok(!r.data.memories.some((m) => m.content === "Leaked"));
+  });
+
+  it("memory_retain stores once, reports duplicates, and accepts the fact type", async () => {
+    const h = await setup(server);
+    const first = await h.executeTool("memory_retain", { content: "Deploys go through DevOps", kind: "fact" }, runCtx());
+    const second = await h.executeTool("memory_retain", { content: "deploys go through **DevOps**." }, runCtx());
+    assert.equal(first.data.status, "stored");
+    assert.equal(second.data.status, "duplicate");
+    assert.equal(adds(server)[0].body.info.kind, "fact");
   });
 
   it("memory_retain refuses an issue from another project and writes nothing", async () => {
-    const h = await setup(server, {}, { issues: [issue(), issue({ id: "iss-2", projectId: "p2", identifier: "SLS-2" })] });
-    const res = await h.executeTool("memory_retain", { content: "p2 builds need node 22", kind: "lesson", issueId: "iss-2" }, runCtx());
-    assert.match(res.error, /another project/);
+    const h = await setup(server, {}, { issues: [issue({ id: "iss-p2", projectId: "p2" })] });
+    const r = await h.executeTool("memory_retain", { content: "Cross-project write", issueId: "iss-p2" }, runCtx());
+    assert.equal(r.data.status, "rejected");
     assert.equal(adds(server).length, 0);
-  });
-
-  it("memory_recall drops results nested under metadata.info or a MemOS user from another company", async () => {
-    const h = await setup(server);
-    server.state.store.push({ userId: `paperclip-${A}`, cubeId: `paperclip-${A}-p1`, content: "nested leak", info: {}, rawMetadata: { info: { companyId: B } } });
-    server.state.store.push({ userId: `paperclip-${A}`, cubeId: `paperclip-${A}-p1`, content: "user leak", info: {}, rawMetadata: { user_id: `paperclip-${B}` } });
-    const res = await h.executeTool("memory_recall", { query: "x" }, runCtx());
-    const contents = res.data.memories.map((m) => m.content);
-    assert.ok(!contents.includes("nested leak"), contents.join(", "));
-    assert.ok(!contents.includes("user leak"), contents.join(", "));
-    assert.ok(contents.includes("A/p1: deploys go through DevOps"));
-  });
-
-  it("memory_retain stores once and reports duplicates", async () => {
-    const h = await setup(server);
-    const first = await h.executeTool("memory_retain", { content: "Use pnpm in the web repo", kind: "lesson", issueId: "iss-1" }, runCtx());
-    const second = await h.executeTool("memory_retain", { content: "use PNPM in the web repo.", kind: "lesson" }, runCtx());
-    assert.equal(first.data.status, "stored");
-    assert.equal(second.data.status, "duplicate");
-    const stored = adds(server);
-    assert.equal(stored.length, 1);
-    assert.equal(stored[0].body.info.issueIdentifier, "SLS-1");
-    assert.equal(stored[0].body.info.runId, "run-9");
   });
 });
 
 describe("plugin fails open", () => {
-  let server;
-  before(async () => (server = await startFakeServer()));
-  after(() => server.close());
-  beforeEach(() => {
-    server.state.mode = "ok";
-    server.state.store.length = 0;
-    server.state.requests.length = 0;
+  it("MemOS down: capture does not throw, recall is empty, retain reports failure", async () => {
+    const url = await deadUrl();
+    const fake = await startFakeServer();
+    try {
+      const h = await setup({ url }, { openrouterBaseUrl: fake.url });
+      await h.emit("issue.comment.created", ...commentEvent());
+      const recall = await h.executeTool("memory_recall", { query: "x" }, runCtx());
+      assert.deepEqual(recall.data.memories, []);
+      const retain = await h.executeTool("memory_retain", { content: "Something durable" }, runCtx());
+      assert.equal(retain.data.status, "failed");
+    } finally {
+      await fake.close();
+    }
   });
 
-  it("server down: capture does not throw, recall is empty, retain reports failure", async () => {
-    const h = await setup({ url: await deadUrl() });
-    await h.emit("issue.comment.created", ...commentEvent());
-    const recall = await h.executeTool("memory_recall", { query: "x" }, runCtx());
-    assert.deepEqual(recall.data.memories, []);
-    const retain = await h.executeTool("memory_retain", { content: "something durable" }, runCtx());
-    assert.equal(retain.data.status, "failed");
-    assert.ok(h.logs.some((l) => l.level === "warn" && /memos (add|search) failed/.test(l.message)));
-  });
-
-  it("slow server: recall returns empty within the timeout", async () => {
-    server.state.mode = "slow";
-    const h = await setup(server, { recallTimeoutMs: 300 });
-    const t0 = Date.now();
-    const recall = await h.executeTool("memory_recall", { query: "x" }, runCtx());
-    assert.deepEqual(recall.data.memories, []);
-    assert.ok(Date.now() - t0 < 1500, `took ${Date.now() - t0}ms`);
-  });
-
-  it("a fetch that ignores the abort signal still cannot hold recall past the deadline", async () => {
-    const neverAborts = (url, init) => new Promise((resolve) => setTimeout(() => resolve(globalThis.fetch(url, { ...init, signal: undefined })), 2500));
-    const harness = createTestHarness({ manifest, config: { memosBaseUrl: server.url, recallTimeoutMs: 300 } });
-    await createMemoryPlugin({ fetchImpl: neverAborts }).definition.setup(harness.ctx);
-    const t0 = Date.now();
-    const recall = await harness.executeTool("memory_recall", { query: "x" }, runCtx());
-    assert.deepEqual(recall.data.memories, []);
-    assert.ok(Date.now() - t0 < 1000, `took ${Date.now() - t0}ms`);
-  });
-
-  it("a concurrent duplicate reports the first write's failure, not 'duplicate'", async () => {
-    server.state.mode = "error500";
-    const h = await setup(server);
-    const [a, b] = await Promise.all([
-      h.executeTool("memory_retain", { content: "Use pnpm in the web repo" }, runCtx()),
-      h.executeTool("memory_retain", { content: "use pnpm in the web repo" }, runCtx()),
-    ]);
-    assert.deepEqual([a.data.status, b.data.status], ["failed", "failed"]);
-  });
-
-  it("500: capture is not marked as stored, so a later delivery retries", async () => {
-    server.state.mode = "error500";
-    const h = await setup(server);
-    await h.emit("issue.comment.created", ...commentEvent());
-    server.state.mode = "ok";
-    server.state.requests.length = 0;
-    await h.emit("issue.comment.created", ...commentEvent());
-    assert.equal(adds(server).length, 2);
+  it("a broken sharing state reads as own project only", async () => {
+    const fake = await startFakeServer();
+    try {
+      const h = await setup(fake);
+      await h.ctx.state.set({ scopeKind: "company", scopeId: A, namespace: "memos-settings", stateKey: "sharing" }, { shares: "nonsense" });
+      assert.deepEqual((await api(h, "recall-scopes", { projectId: "p1" })).body.scopes, []);
+    } finally {
+      await fake.close();
+    }
   });
 });
