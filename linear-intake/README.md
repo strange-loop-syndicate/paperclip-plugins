@@ -55,7 +55,7 @@ Config is saved per company. The plugin is single-tenant: configure it in one co
 Needs Node 24+.
 
 ```sh
-cd /Users/claude/work/workspace/paperclip-linear-intake
+cd /Users/claude/work/paperclip-plugins-repo/linear-intake
 npm ci
 npm run check     # typecheck + tests + build + manifest validation
 ```
@@ -73,7 +73,7 @@ Install needs an instance admin (board) credential. Agent API keys get `403 Boar
    POST /api/plugins/install
    Content-Type: application/json
 
-   { "packageName": "/Users/claude/work/workspace/paperclip-linear-intake", "isLocalPath": true }
+   { "packageName": "/Users/claude/work/paperclip-plugins-repo/linear-intake", "isLocalPath": true }
    ```
 
    The CLI sends the same request: `npx paperclipai plugin install --local <path> --api-base http://127.0.0.1:3100`, run from `/Users/claude/work/paperclip/app`.
