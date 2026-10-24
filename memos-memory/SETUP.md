@@ -175,12 +175,14 @@ A hot reload can restart the worker without its event subscriptions (SLS-60). Th
 
 - **Mark:** every delivered comment or run event writes the time to plugin state (`instance` scope, namespace `memos-health`, key `last-event`, one entry per company). A busy worker writes it at most once a minute.
 - **Check:** the `event-health` job runs every minute. A company is deaf when no event came for 10 minutes and an agent or board comment was created after the last event. The comment must be at least 2 minutes old, so an event still on its way does not count. A quiet company with no new comments is never an alert.
+- **Which comments count:** only those created at least 1 minute after the stored mark. A busy worker skips mark writes for up to a minute, so an event in that minute leaves no newer mark. Comments the host writes without an event do not count: those with a `presentation`, and those whose `metadata.authorizationReason` is `internal_agent_write`, `onboarding first-task greeting` or `allow_chat_run_presentation`.
 - **Alert, once per outage:** one `memory plugin is deaf` error in the log and one comment on `eventHealthIssue`, with the last event time and the newest comment. The alert is saved before the comment is posted: if saving fails, nothing is posted. A failed post is retried on the next run.
 - **Recovery:** the next event after the outage logs `memory plugin events are back` and clears the alert. A later outage alerts again.
 - **No auto-repair:** only a board user can disable and enable the plugin (Settings → Plugins → MemOS Memory).
 - **Forced test:** hot-reload the worker, or set the company's entry in `last-event` back by more than 10 minutes. Either gives exactly one comment once a new comment is 2 minutes old.
 - **Wakes no one:** the host never wakes an assignee for a plugin's own comment. The alert waits on the issue until someone reads it.
 - **First install:** a company is checked only after its first event, so a worker that is deaf from the start is not detected.
+- **Missing alert issue:** the warning is logged once per outage. The post is tried again each minute, so the alert still lands if the issue is created later.
 
 ## Failure behaviour
 
@@ -221,6 +223,7 @@ npm test
 - **Double signals outside Paperclip.** Started by a non-job-control `sh -c` under a terminal, the wrapper is not group leader but shares the group with the CLI. Ctrl-C then reaches the CLI twice, and Claude treats that as "exit now". Paperclip spawns the wrapper as group leader, so this does not happen there.
 - **Resumed sessions repeat memories.** Each resumed heartbeat adds a new block of up to `MEMOS_MAX_BLOCK_CHARS` to the conversation, often with the same memories. To limit the cost, lower `MEMOS_MAX_BLOCK_CHARS`. A later version could track injected hashes per session.
 - **Dedup marker write can fail after the memory is stored.** The memory still counts as stored and a warning is logged. A redelivered event can then store it a second time. MemOS has no write-if-absent call to close this gap.
+- **Decision effects can give a false deaf alert.** A board decision with a `comment_on_issue` effect writes a board comment with no event and no mark that tells it apart. If no other event comes for 10 minutes after one, the plugin alerts.
 - **The deaf check reads up to 25 threads.** Only when no event came for 10 minutes: it lists the company's issues and reads the comments of those with activity after the last event, newest first.
 - **Comment capture reads the whole thread.** The SDK has no single-comment read, so each comment loads all of the issue's comments (5 s limit). On a very long thread the read can time out, and the item waits in the retry queue.
 - **Stdin read error:** the CLI starts with the bytes read so far and no memories, and the wrapper logs a warning.

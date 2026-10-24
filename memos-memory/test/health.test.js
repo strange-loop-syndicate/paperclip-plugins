@@ -34,11 +34,11 @@ async function setup({ now, config = {}, issues = [INBOX, WORK] } = {}) {
 
 let seq = 0;
 /** A comment written at `at`, and the issue's activity moved to match, as the host does. */
-async function addComment(h, now, { issue = WORK, at = now(), authorType = "agent", companyId = issue.companyId } = {}) {
+async function addComment(h, now, { issue = WORK, at = now(), authorType = "agent", companyId = issue.companyId, presentation = null, metadata = null } = {}) {
   const id = `c-${++seq}`;
   h.seed({
     issues: [{ ...issue, updatedAt: new Date(at), lastActivityAt: new Date(at) }],
-    issueComments: [{ id, companyId, issueId: issue.id, authorType, authorAgentId: authorType === "agent" ? "agent-1" : null, body: "status", createdAt: new Date(at), updatedAt: new Date(at) }],
+    issueComments: [{ id, companyId, issueId: issue.id, authorType, authorAgentId: authorType === "agent" ? "agent-1" : null, body: "status", presentation, metadata, createdAt: new Date(at), updatedAt: new Date(at) }],
   });
   return id;
 }
@@ -109,6 +109,22 @@ describe("event health: alert when events stop", () => {
     assert.equal(alert.alertIssue, "SLS-120");
   });
 
+  it("healthy: an event whose mark write was skipped does not leave its comment looking unheard", async () => {
+    const now = clock();
+    const h = await setup({ now });
+    await addComment(h, now);
+    await event(h);
+    now.advance(MARK_EVERY_MS - 1000);
+    await addComment(h, now);
+    await event(h); // delivered, but within a minute of the last mark write
+    for (let i = 0; i < 15; i++) {
+      now.advance(MIN);
+      await runJob(h);
+    }
+    assert.equal((await alertsOn(h)).length, 0);
+    assert.equal(errors(h).length, 0);
+  });
+
   it("waits the full 10 minutes without events before it alerts", async () => {
     const now = clock();
     const h = await setup({ now });
@@ -147,6 +163,41 @@ describe("event health: alert when events stop", () => {
     h.seed({ issueComments: [{ id: "c-del", companyId: A, issueId: WORK.id, authorType: "agent", body: "", deletedAt: new Date(now()), createdAt: new Date(now()), updatedAt: new Date(now()) }] });
     now.advance(DEAF_AFTER_MS + MIN);
     await runJob(h);
+    assert.equal((await alertsOn(h)).length, 0);
+  });
+
+  it("comments the host writes without an event do not count", async () => {
+    const now = clock();
+    const h = await setup({ now });
+    await event(h);
+    now.advance(2 * MIN);
+    // Workspace-ready note, continuation-exhausted note, onboarding greeting, chat run summary.
+    await addComment(h, now, { presentation: { kind: "workspace_ready" }, metadata: { authorizationReason: "allow_scoped_agent_write" } });
+    await addComment(h, now, { metadata: { authorizationReason: "internal_agent_write" } });
+    await addComment(h, now, { metadata: { authorizationReason: "onboarding first-task greeting" } });
+    await addComment(h, now, { metadata: { authorizationReason: "allow_chat_run_presentation" } });
+    now.advance(DEAF_AFTER_MS + MIN);
+    await runJob(h);
+    assert.equal((await alertsOn(h)).length, 0);
+    // A comment from the comment routes does send an event, so it counts.
+    await addComment(h, now, { metadata: { authorizationReason: "allow_scoped_agent_write" } });
+    now.advance(COMMENT_GRACE_MS);
+    await runJob(h);
+    assert.equal((await alertsOn(h)).length, 1);
+  });
+
+  it("a missing alert issue is logged once per outage", async () => {
+    const now = clock();
+    const h = await setup({ now, config: { eventHealthIssue: "SLS-999" } });
+    await event(h);
+    now.advance(2 * MIN);
+    await addComment(h, now);
+    for (let i = 0; i < 15; i++) {
+      now.advance(MIN);
+      await runJob(h);
+    }
+    assert.equal(errors(h).length, 1);
+    assert.equal(h.logs.filter((l) => /alert issue not found/.test(l.message)).length, 1);
     assert.equal((await alertsOn(h)).length, 0);
   });
 

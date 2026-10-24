@@ -13,7 +13,8 @@ export const HEALTH_JOB_KEY = "event-health";
 export const DEAF_AFTER_MS = 10 * 60 * 1000;
 // A comment counts once it is this old: its event may still be on its way.
 export const COMMENT_GRACE_MS = 2 * 60 * 1000;
-// A busy worker rewrites its mark at most this often.
+// A busy worker rewrites its mark at most this often. So an event can be up to
+// this much newer than the stored mark, and so can the comment it carried.
 export const MARK_EVERY_MS = 60 * 1000;
 // Issues whose comments one check reads, newest activity first.
 export const MAX_ISSUES_SCANNED = 25;
@@ -21,6 +22,11 @@ export const DEFAULT_ALERT_ISSUE = "SLS-120";
 const HOST_CALL_TIMEOUT_MS = 5000;
 const LIST_TIMEOUT_MS = 15000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// Host comment paths that write an agent comment but send no
+// `issue.comment.created`: workspace-ready and continuation-exhausted notes
+// (no reason given), the onboarding greeting, and chat run summaries.
+const UNANNOUNCED_REASONS = new Set(["internal_agent_write", "onboarding first-task greeting", "allow_chat_run_presentation"]);
+const announced = (c) => c.presentation == null && !UNANNOUNCED_REASONS.has(c.metadata?.authorizationReason);
 
 // One instance key holds every company's mark, so a fresh worker knows which
 // companies to check before it has seen a single event.
@@ -61,13 +67,13 @@ export function createEventHealth({ now = () => Date.now() } = {}) {
   }
 
   /**
-   * The newest agent or board comment created after `since` and before
-   * `until`, or null. Only issues with activity after `since` can hold one.
+   * The newest agent or board comment created from `from` up to `until`, or
+   * null. Only issues with activity from `from` on can hold one.
    */
-  async function newestCommentBetween(ctx, companyId, issues, since, until) {
+  async function newestCommentBetween(ctx, companyId, issues, from, until) {
     const candidates = issues
       .map((issue) => ({ issue, at: ms(issue.lastActivityAt) ?? ms(issue.updatedAt) }))
-      .filter((c) => c.at !== null && c.at > since)
+      .filter((c) => c.at !== null && c.at >= from)
       .sort((a, b) => b.at - a.at)
       .slice(0, MAX_ISSUES_SCANNED);
     let newest = null;
@@ -77,8 +83,9 @@ export function createEventHealth({ now = () => Date.now() } = {}) {
         if (c.companyId !== companyId || c.deletedAt) continue;
         // System and plugin comments may reach plugins by other paths, or not at all.
         if (c.authorType !== "agent" && c.authorType !== "user") continue;
+        if (!announced(c)) continue;
         const at = ms(c.createdAt);
-        if (at === null || at <= since || at > until) continue;
+        if (at === null || at < from || at > until) continue;
         if (!newest || at > newest.at) newest = { at, issueIdentifier: issue.identifier ?? issue.id };
       }
     }
@@ -121,7 +128,10 @@ export function createEventHealth({ now = () => Date.now() } = {}) {
     const issues = (await withTimeout(ctx.issues.list({ companyId }), LIST_TIMEOUT_MS, "issues.list") ?? []).filter((i) => i.companyId === companyId);
     let current = alert;
     if (!current) {
-      const comment = await newestCommentBetween(ctx, companyId, issues, lastEventAt, t - COMMENT_GRACE_MS);
+      // An event that came less than MARK_EVERY_MS after the mark left no
+      // newer mark, and its comment is older than the event. So the search
+      // starts where such comments end.
+      const comment = await newestCommentBetween(ctx, companyId, issues, lastEventAt + MARK_EVERY_MS, t - COMMENT_GRACE_MS);
       if (!comment) return "quiet";
       // Saved before the comment is posted: if saving fails nothing is posted,
       // so a broken state store cannot turn into a comment every minute.
@@ -139,7 +149,10 @@ export function createEventHealth({ now = () => Date.now() } = {}) {
     if (!ref) return "deaf";
     const target = findAlertIssue(issues, ref) ?? (UUID.test(ref) ? await withTimeout(ctx.issues.get(ref, companyId), HOST_CALL_TIMEOUT_MS, "issues.get") : null);
     if (!target || target.companyId !== companyId) {
-      ctx.logger.warn("event health alert issue not found; alert logged only", { companyId, alertIssue: ref });
+      if (!current.issueMissing) {
+        ctx.logger.warn("event health alert issue not found; alert logged only", { companyId, alertIssue: ref });
+        await ctx.state.set(key, { ...current, issueMissing: true });
+      }
       return "deaf";
     }
     const posted = await withTimeout(
