@@ -27,7 +27,7 @@ The list lives in `src/commands.ts`. Edit it, then `npm run build`.
   with an agent author, and users not in `ALLOWED_USER_IDS` are ignored.
   The plugin's own replies are `plugin` events, so no loops.
 - **Any comment starting with `!` runs.** Do not start ordinary comments with `!`.
-  Exception: `![` (a markdown image, such as a pasted screenshot) runs nothing.
+  Exception: `![` (a markdown image, such as a pasted screenshot) runs nothing and posts nothing; the plugin only wakes the assignee.
 - **Timeout** per command. The process group is killed with SIGKILL.
 - **Output** is truncated to the last 6000 characters.
 - **`!restart-paperclip`** replies "started" first, then runs detached in its own

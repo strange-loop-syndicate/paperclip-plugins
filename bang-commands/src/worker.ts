@@ -41,6 +41,24 @@ export function createPlugin(deps: WorkerDeps = defaultDeps) {
         if (parsed.kind === "none") return;
         handled.add(commentId);
 
+        // The patched server does not wake the assignee on a `!` comment
+        // (scripts/patch-paperclip-server.mjs), so the plugin does it.
+        const wake = async (reason: string) => {
+          try {
+            const result = await ctx.issues.requestWakeup(issueId, event.companyId, {
+              reason,
+              idempotencyKey: `bang-commands:${commentId}`,
+            });
+            ctx.logger.info("Woke assignee after bang comment", { issueId, commentId, reason, runId: result.runId });
+          } catch (err) {
+            // No assignee, closed, blocked or over budget: nothing to wake.
+            ctx.logger.info("Did not wake assignee after bang comment", { issueId, commentId, error: String(err) });
+          }
+        };
+
+        // A comment that starts with a pasted image runs nothing and posts nothing.
+        if (parsed.kind === "image") return void (await wake("bang_image_comment"));
+
         const reply = (body: string) => ctx.issues.createComment(issueId, body, event.companyId);
 
         if (parsed.kind === "help") return void (await reply(formatHelp(deps.commands)));
@@ -58,18 +76,8 @@ export function createPlugin(deps: WorkerDeps = defaultDeps) {
         const result = await deps.run(cmd);
         await reply(formatResult(cmd, result));
 
-        // The patched server does not wake the assignee on a `!` comment
-        // (scripts/patch-paperclip-server.mjs). Wake it now, with the output posted.
-        try {
-          const wake = await ctx.issues.requestWakeup(issueId, event.companyId, {
-            reason: "bang_command_result",
-            idempotencyKey: `bang-commands:${commentId}`,
-          });
-          ctx.logger.info("Woke assignee after bang command", { issueId, commentId, runId: wake.runId });
-        } catch (err) {
-          // No assignee, closed, blocked or over budget: nothing to wake.
-          ctx.logger.info("Did not wake assignee after bang command", { issueId, commentId, reason: String(err) });
-        }
+        // Wake the assignee now, with the output posted.
+        await wake("bang_command_result");
       });
     },
 
