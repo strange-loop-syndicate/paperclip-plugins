@@ -1,6 +1,6 @@
-# paperclip-memos
+# memos-memory
 
-Paperclip memory plugin backed by self-hosted MemOS, plus a pre-prompt recall wrapper for the `claude_local` and `codex_local` adapters.
+Paperclip memory plugin backed by self-hosted MemOS, plus a pre-prompt recall wrapper for the `claude_local` and `codex_local` adapters. Jev decides what is worth keeping; an LLM writes it as short memories.
 
 - **Setup:** [`SETUP.md`](SETUP.md)
 - **Tests:** `npm install && npm test`

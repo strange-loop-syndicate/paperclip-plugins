@@ -1,5 +1,7 @@
-// One HTTP server that plays both MemOS (/product/*) and the Paperclip
-// issue API (/api/issues/:id). `mode` switches failure behaviour at runtime.
+// One HTTP server that plays MemOS (/product/*), the Paperclip issue API
+// (/api/issues/:id), the plugin's recall-scopes route, and OpenRouter's Jev
+// (/systemone) and chat (/chat/completions) endpoints. `mode` switches MemOS
+// failure behaviour at runtime; `llm.mode` switches the OpenRouter side.
 
 import { createServer } from "node:http";
 
@@ -11,6 +13,17 @@ export async function startFakeServer({ issues = {} } = {}) {
     issues: { ...issues },
     store: [], // { userId, cubeId, content, info }
     requests: [], // { path, body, receivedAt, respondedAt }
+    // projectId -> [{ projectId, projectName }] answered by the recall-scopes route
+    sharedScopes: {},
+    sharingMode: "ok", // ok | error500
+    llm: {
+      mode: "ok", // ok | error500 | error401
+      chatMode: "ok", // ok | error503 (extractor only)
+      // Jev probabilities by question key, or a function of the request body
+      answers: { decision: 0.9, lesson: 0.1, outcome: 0.2, fact: 0.1, routine: 0.1 },
+      // Extracted memories, or a function of the request body
+      memories: [{ type: "decision", text: "Pre-prompt recall runs in a command wrapper, not a plugin hook." }],
+    },
   };
 
   const server = createServer((req, res) => {
@@ -31,6 +44,26 @@ export async function startFakeServer({ issues = {} } = {}) {
         if (state.issueMode === "hang") return;
         const issue = state.issues[decodeURIComponent(issueMatch[1])];
         return issue ? send(200, issue) : send(404, { error: "not found" });
+      }
+
+      const scopesMatch = req.url.match(/^\/api\/plugins\/([^/]+)\/api\/recall-scopes\?projectId=([^&]+)$/);
+      if (scopesMatch) {
+        if (state.sharingMode === "error500") return send(500, { error: "boom" });
+        return send(200, { scopes: state.sharedScopes[decodeURIComponent(scopesMatch[2])] ?? [] });
+      }
+
+      if (req.url === "/systemone" || req.url === "/chat/completions") {
+        if (state.llm.mode === "error500") return send(500, { error: "boom" });
+        if (state.llm.mode === "error401") return send(401, { error: "bad key" });
+        const b = entry.body;
+        if (req.url === "/systemone") {
+          const probs = typeof state.llm.answers === "function" ? state.llm.answers(b) : state.llm.answers;
+          const answers = Object.fromEntries(Object.entries(probs).map(([k, p]) => [k, { noul: p }]));
+          return send(200, { model: b.model, answers, usage: { input_tokens: 100, cost: 0.0001 } });
+        }
+        if (state.llm.chatMode === "error503") return send(503, { error: "overloaded" });
+        const memories = typeof state.llm.memories === "function" ? state.llm.memories(b) : state.llm.memories;
+        return send(200, { choices: [{ message: { role: "assistant", content: JSON.stringify({ memories }) } }], usage: { cost: 0.0002 } });
       }
 
       if (state.mode === "slow" || state.delayMs > 0) {
@@ -61,6 +94,7 @@ export async function startFakeServer({ issues = {} } = {}) {
     state,
     url: `http://127.0.0.1:${port}`,
     memosRequests: () => state.requests.filter((r) => r.path.startsWith("/product/")),
+    llmRequests: (path) => state.requests.filter((r) => r.path === path),
     close: () =>
       new Promise((r) => {
         server.closeAllConnections?.();
