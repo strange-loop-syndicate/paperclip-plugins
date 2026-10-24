@@ -14,7 +14,7 @@ A key is skipped when either is true:
 1. **Plugin state** has the key (company scope, namespace `linear-intake`).
 2. **A Paperclip task** in the company has a title that starts with `[KEY]`, in any status. The key is then recorded in state.
 
-The task list is read only when Linear returns a key that is not in state. A restart between "task created" and "key recorded" finds the `[KEY]` task on the next tick, so it makes no duplicate.
+The task list is read only when Linear returns a key that is not in state. It is read in one call with no `limit`: the host applies `offset` twice, so offset paging would stop after the first page. A restart between "task created" and "key recorded" finds the `[KEY]` task on the next tick, so it makes no duplicate.
 
 ## Failures
 
@@ -22,8 +22,8 @@ The task list is read only when Linear returns a key that is not in state. A res
 |---|---|
 | Linear HTTP error, GraphQL error, timeout (20 s) or network error | Error in the plugin log, job run marked failed, nothing created. The next tick retries. |
 | Mapped Paperclip project not found | Warning; the task goes to the fallback project. |
-| Wakeup refused (budget, blockers) | The task stays and the key is recorded; the job run is marked failed. Wake the Project Lead by hand. |
-| More than 100 Todo issues | Warning; the rest come in on later ticks as earlier ones leave Todo. |
+| Wakeup refused (budget, blockers) | The task stays and the key is recorded; the job run is marked failed. The wakeup is not retried. Wake the Project Lead by hand. |
+| More than 100 Todo issues | Warning; only the first 100 are read. Issues past them are read only after earlier ones leave Todo, so the Project Lead must move taken issues out of Todo. |
 | No company config yet, or invalid config | Warning or error in the log; no Linear call. |
 
 ## Config fields

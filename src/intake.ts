@@ -4,7 +4,6 @@ import { fetchIntakeIssues, type LinearIssue } from "./linear.ts";
 
 export const JOB_KEY = "linear-intake";
 export const STATE_NAMESPACE = "linear-intake";
-const ISSUE_PAGE_SIZE = 500;
 
 export interface IntakeRecord {
   issueId: string;
@@ -27,19 +26,21 @@ export function taskTitle(issue: LinearIssue): string {
   return `[${issue.identifier}] ${issue.title}`;
 }
 
-/** Map key -> id of the first Paperclip task whose title starts with `[KEY]`, any status. */
+/**
+ * Map key -> id of the first Paperclip task whose title starts with `[KEY]`, any status.
+ * One unwindowed list call: the host applies `offset` twice (in SQL, then again on the
+ * returned rows), so offset paging returns an empty second page. With no `limit` the
+ * host returns every visible task.
+ */
 async function findTasksByKey(ctx: PluginContext, companyId: string, keys: string[]): Promise<Map<string, string>> {
   const found = new Map<string, string>();
   const prefixes = keys.map((key) => ({ key, prefix: `[${key}]` }));
-  for (let offset = 0; ; offset += ISSUE_PAGE_SIZE) {
-    const page = await ctx.issues.list({ companyId, limit: ISSUE_PAGE_SIZE, offset });
-    for (const task of page) {
-      for (const { key, prefix } of prefixes) {
-        if (!found.has(key) && task.title.startsWith(prefix)) found.set(key, task.id);
-      }
+  for (const task of await ctx.issues.list({ companyId })) {
+    for (const { key, prefix } of prefixes) {
+      if (!found.has(key) && task.title.startsWith(prefix)) found.set(key, task.id);
     }
-    if (page.length < ISSUE_PAGE_SIZE || found.size === keys.length) return found;
   }
+  return found;
 }
 
 function mappedProjectId(config: IntakeConfig, issue: LinearIssue): string | null {
@@ -69,7 +70,10 @@ export async function runIntake(ctx: PluginContext, companyId: string, config: I
     throw err;
   }
   if (page.hasNextPage) {
-    ctx.logger.warn("Linear returned more than one page of Todo issues; the rest are taken next ticks");
+    ctx.logger.warn(
+      "Linear has more Todo issues than one page; only the first page was read. The rest are read only after earlier issues leave Todo",
+      { pageSize: page.issues.length },
+    );
   }
 
   const summary: IntakeSummary = { fetched: page.issues.length, created: [], adopted: [], failed: [] };

@@ -180,6 +180,27 @@ test("existing [KEY] task (any status) -> no new task, no wakeup, key recorded",
   assert.equal((stateFor(harness, "M-123") as { issueId: string }).issueId, "manual-1");
 });
 
+test("existing [KEY] task past the first 500 tasks is found when the host windows the list twice", async (t) => {
+  const harness = await boundHarness();
+  const filler = Array.from({ length: 600 }, (_, i) => existingIssue(`filler-${i}`, `[KNO-${9000 + i}] Filler`));
+  harness.seed({ issues: [...filler, existingIssue("manual-late", "[M-123] Old low-priority task", "backlog")] });
+  // The host applies limit/offset in SQL, then slices the result by offset again.
+  const sqlWindowed = harness.ctx.issues.list.bind(harness.ctx.issues);
+  t.mock.method(harness.ctx.issues, "list", async (params: Parameters<typeof sqlWindowed>[0]) => {
+    const rows = await sqlWindowed(params);
+    const offset = params.offset ?? 0;
+    return params.limit == null ? rows.slice(offset) : rows.slice(offset, offset + params.limit);
+  });
+  const wakeups = wakeupSpy(t, harness);
+  stubFetch(t, () => linearOk([linearIssue("M-123", "Port the three MCP tools")]));
+
+  await harness.runJob(JOB_KEY);
+
+  assert.equal((await sqlWindowed({ companyId: COMPANY })).length, 601);
+  assert.equal(wakeups.mock.callCount(), 0);
+  assert.equal((stateFor(harness, "M-123") as { issueId: string }).issueId, "manual-late");
+});
+
 test("a [KEY] prefix match needs the whole key: [M-1234] does not block M-123", async (t) => {
   const harness = await boundHarness();
   harness.seed({ issues: [existingIssue("other", "[M-1234] Something else")] });
