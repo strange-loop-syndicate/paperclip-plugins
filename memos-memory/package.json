@@ -1,0 +1,21 @@
+{
+  "name": "@sls/paperclip-memos",
+  "version": "0.1.0",
+  "description": "Paperclip memory plugin backed by self-hosted MemOS, with pre-prompt recall for claude_local and codex_local",
+  "private": true,
+  "type": "module",
+  "main": "src/worker.js",
+  "paperclipPlugin": {
+    "manifest": "./src/manifest.js",
+    "worker": "./src/worker.js"
+  },
+  "scripts": {
+    "test": "node --test --test-reporter=spec \"test/*.test.js\""
+  },
+  "engines": {
+    "node": ">=20.3"
+  },
+  "dependencies": {
+    "@paperclipai/plugin-sdk": "2026.1012.0"
+  }
+}

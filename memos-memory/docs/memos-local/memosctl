@@ -1,0 +1,73 @@
+#!/bin/bash
+# memosctl - start/stop/status for the local MemOS stack (SLS-61).
+# Neo4j (bolt 127.0.0.1:7687), Qdrant (127.0.0.1:6333) and the MemOS API
+# (127.0.0.1:8001) all run as the invoking user with a scratch HOME, so no
+# host credential files are reachable from the processes.
+set -euo pipefail
+R=/Users/claude/work/memos-runtime
+ENV_FILE="$R/memos.env"
+API_PORT="${MEMOS_API_PORT:-8001}"
+JAVA_HOME=/usr/local/opt/openjdk/libexec/openjdk.jdk/Contents/Home
+CLEAN_ENV=(env -i HOME="$R/home" PATH=/usr/bin:/bin:/usr/sbin:/sbin TMPDIR="$R/run" LANG=en_US.UTF-8 JAVA_HOME="$JAVA_HOME")
+
+# Run "$@" in its own session so it outlives the calling shell (no tty needed).
+detach() { exec /usr/bin/python3 -I -c 'import os,sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' "$@" </dev/null; }
+
+pid_alive() { [ -f "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null; }
+
+wait_http() { # url seconds
+  for _ in $(seq "$2"); do curl -fsS -o /dev/null "$1" 2>/dev/null && return 0; sleep 1; done; return 1
+}
+
+start_neo4j() {
+  if "${CLEAN_ENV[@]}" "$R/neo4j/bin/neo4j" status >/dev/null 2>&1; then echo "neo4j: already running"; return; fi
+  "${CLEAN_ENV[@]}" "$R/neo4j/bin/neo4j" start >/dev/null
+  wait_http http://127.0.0.1:7474 60 && echo "neo4j: up" || { echo "neo4j: failed, see $R/logs/neo4j"; exit 1; }
+}
+
+start_qdrant() {
+  if pid_alive "$R/run/qdrant.pid"; then echo "qdrant: already running"; return; fi
+  ( cd "$R/qdrant" && detach "${CLEAN_ENV[@]}" \
+      QDRANT__SERVICE__HOST=127.0.0.1 QDRANT__SERVICE__HTTP_PORT=6333 QDRANT__SERVICE__GRPC_PORT=6334 \
+      QDRANT__STORAGE__STORAGE_PATH="$R/data/qdrant" QDRANT__STORAGE__SNAPSHOTS_PATH="$R/data/qdrant-snapshots" \
+      QDRANT__TELEMETRY_DISABLED=true \
+      ./qdrant >>"$R/logs/qdrant.log" 2>&1 & echo $! >"$R/run/qdrant.pid" )
+  wait_http http://127.0.0.1:6333/readyz 30 && echo "qdrant: up" || { echo "qdrant: failed, see $R/logs/qdrant.log"; exit 1; }
+}
+
+start_api() {
+  if pid_alive "$R/run/memos-api.pid"; then echo "memos-api: already running"; return; fi
+  [ -f "$ENV_FILE" ] || { echo "missing $ENV_FILE"; exit 1; }
+  for k in OPENAI_API_KEY MEMRADER_API_KEY MOS_EMBEDDER_API_KEY; do
+    grep -Eq "^$k=.+" "$ENV_FILE" || [ -n "${MEMOS_ALLOW_EMPTY_KEYS:-}" ] || { echo "memos-api: $k is empty in $ENV_FILE"; exit 1; }
+  done
+  # Variables come only from the env file; nothing is inherited from the caller.
+  ( cd "$R/run" && detach "${CLEAN_ENV[@]}" bash -c '
+      set -a; . "$1"; set +a
+      exec "$2/venv/bin/python" -I -m uvicorn memos.api.server_api:app --host 127.0.0.1 --port "$3" --workers 1
+    ' _ "$ENV_FILE" "$R" "$API_PORT" >>"$R/logs/memos-api.log" 2>&1 & echo $! >"$R/run/memos-api.pid" )
+  wait_http "http://127.0.0.1:$API_PORT/health" 180 && echo "memos-api: up at http://127.0.0.1:$API_PORT" \
+    || { echo "memos-api: failed, see $R/logs/memos-api.log"; exit 1; }
+}
+
+stop_pid() { # name pidfile
+  if pid_alive "$2"; then
+    kill "$(cat "$2")"; for _ in $(seq 20); do pid_alive "$2" || break; sleep 1; done
+    pid_alive "$2" && echo "$1: still running (pid $(cat "$2"))" || { rm -f "$2"; echo "$1: stopped"; }
+  else rm -f "$2"; echo "$1: not running"; fi
+}
+
+case "${1:-}" in
+  start)   start_neo4j; start_qdrant; start_api ;;
+  start-storage) start_neo4j; start_qdrant ;;
+  stop)    stop_pid memos-api "$R/run/memos-api.pid"; stop_pid qdrant "$R/run/qdrant.pid"
+           "${CLEAN_ENV[@]}" "$R/neo4j/bin/neo4j" stop >/dev/null 2>&1 || true; echo "neo4j: stopped" ;;
+  restart-api) stop_pid memos-api "$R/run/memos-api.pid"; start_api ;;
+  restart) "$0" stop; "$0" start ;;
+  status)
+    "${CLEAN_ENV[@]}" "$R/neo4j/bin/neo4j" status 2>/dev/null | head -1 || echo "neo4j: not running"
+    pid_alive "$R/run/qdrant.pid" && echo "qdrant: running (pid $(cat "$R/run/qdrant.pid"))" || echo "qdrant: not running"
+    pid_alive "$R/run/memos-api.pid" && echo "memos-api: running (pid $(cat "$R/run/memos-api.pid"))" || echo "memos-api: not running"
+    curl -fsS "http://127.0.0.1:$API_PORT/health" 2>/dev/null && echo || true ;;
+  *) echo "usage: memosctl start|start-storage|stop|restart|restart-api|status"; exit 2 ;;
+esac

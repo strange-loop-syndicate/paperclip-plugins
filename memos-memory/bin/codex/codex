@@ -1,0 +1,5 @@
+#!/usr/bin/env node
+// Paperclip adapter command wrapper: pre-prompt MemOS recall, then the real codex.
+import { wrapperEntry } from "../../src/wrapper/main.js";
+
+wrapperEntry("codex");
