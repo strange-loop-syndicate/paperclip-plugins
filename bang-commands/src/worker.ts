@@ -1,5 +1,5 @@
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
-import { ALLOWED_USER_IDS, buildCommands, pluginRoot, type BangCommand } from "./commands.js";
+import { ALLOWED_USER_IDS, buildCommands, detachedLogPath, pluginRoot, type BangCommand } from "./commands.js";
 import { runCommand, startDetached, type RunResult } from "./runner.js";
 import { formatHelp, formatResult, label, parseComment } from "./handler.js";
 
@@ -15,7 +15,7 @@ const defaultDeps: WorkerDeps = {
   commands: buildCommands(root),
   allowedUserIds: ALLOWED_USER_IDS,
   run: runCommand,
-  startDetached: (cmd) => startDetached(cmd, `${root}/detached-${cmd.name}.log`),
+  startDetached: (cmd) => startDetached(cmd, detachedLogPath(cmd.name)),
 };
 
 export function createPlugin(deps: WorkerDeps = defaultDeps) {

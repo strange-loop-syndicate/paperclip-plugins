@@ -4,7 +4,7 @@ import manifest from "../src/manifest.js";
 import { createPlugin, type WorkerDeps } from "../src/worker.js";
 import { fence, label, parseComment, truncate } from "../src/handler.js";
 import { runCommand } from "../src/runner.js";
-import type { BangCommand } from "../src/commands.js";
+import { detachedLogPath, pluginRoot, type BangCommand } from "../src/commands.js";
 
 const COMPANY = "co_1";
 const ISSUE = "iss_1";
@@ -286,5 +286,12 @@ describe("runner", () => {
   it("reports a missing executable", async () => {
     const r = await runCommand({ name: "t", description: "", argv: ["/nonexistent/bin"], timeoutMs: 1_000 });
     expect(r.error).toBeTruthy();
+  });
+
+  it("logs detached commands next to the server log, outside the plugin folder", () => {
+    const root = pluginRoot("file:///Users/claude/work/paperclip-plugins-repo/bang-commands/dist/worker.js");
+    const log = detachedLogPath("restart-paperclip");
+    expect(log).toBe("/Users/claude/work/paperclip/detached-restart-paperclip.log");
+    expect(log.startsWith(`${root}/`)).toBe(false);
   });
 });
