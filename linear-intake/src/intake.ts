@@ -53,6 +53,7 @@ interface Targets {
   projects: Project[];
   fallbackProjectId: string;
   projectLeadAgentId: string;
+  creatorAgentId: string;
 }
 
 /**
@@ -101,6 +102,7 @@ async function resolveTargets(ctx: PluginContext, companyId: string, config: Int
     projects,
     fallbackProjectId: resolveProject(projects, config.fallbackProject, "fallbackProject"),
     projectLeadAgentId: await resolveAgent(ctx, companyId, config.projectLead, "projectLeadAgentId"),
+    creatorAgentId: await resolveAgent(ctx, companyId, config.creatorAgent, "creatorAgent"),
   };
 }
 
@@ -201,8 +203,12 @@ export async function runIntake(
           projectId,
           title: taskTitle(issue),
           description: issue.url,
+          // The host default is backlog, and a backlog task cannot be woken.
+          status: "todo",
           assigneeAgentId: targets.projectLeadAgentId,
           originId: key,
+          // The host records actorAgentId as createdByAgentId.
+          actor: { actorAgentId: targets.creatorAgentId },
         });
         const record: IntakeRecord = { issueId: task.id, recordedAt: new Date().toISOString(), source: "created" };
         let wakeError: unknown = null;

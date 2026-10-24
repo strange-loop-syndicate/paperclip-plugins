@@ -17,6 +17,8 @@ export interface IntakeConfig {
   fallbackProject: string;
   /** Paperclip agent id or name. */
   projectLead: string;
+  /** Paperclip agent id or name, recorded as the task's creator. */
+  creatorAgent: string;
 }
 
 export const DEFAULT_LINEAR_AGENT_USER = "Claude Code";
@@ -24,6 +26,7 @@ export const DEFAULT_ASSIGNMENT_FIELD: AssignmentField = "delegate";
 export const DEFAULT_TEAM_KEYS = ["M", "KNO"];
 export const DEFAULT_FALLBACK_PROJECT = "Ops";
 export const DEFAULT_PROJECT_LEAD_AGENT_ID = "e18b31d8-e737-4e89-8471-697d59b65453";
+export const DEFAULT_CREATOR_AGENT = "Project Director";
 
 export type ParsedConfig = { ok: true; config: IntakeConfig } | { ok: false; errors: string[] };
 
@@ -50,6 +53,7 @@ export function parseConfig(raw: Record<string, unknown>): ParsedConfig {
   const fallbackProject =
     nonEmptyString(raw.fallbackProject) ?? nonEmptyString(raw.fallbackProjectId) ?? DEFAULT_FALLBACK_PROJECT;
   const projectLead = nonEmptyString(raw.projectLeadAgentId) ?? DEFAULT_PROJECT_LEAD_AGENT_ID;
+  const creatorAgent = nonEmptyString(raw.creatorAgent) ?? DEFAULT_CREATOR_AGENT;
 
   const assignmentField = raw.assignmentField ?? DEFAULT_ASSIGNMENT_FIELD;
   if (assignmentField !== "assignee" && assignmentField !== "delegate") {
@@ -88,6 +92,7 @@ export function parseConfig(raw: Record<string, unknown>): ParsedConfig {
       projectMap,
       fallbackProject,
       projectLead,
+      creatorAgent,
     },
   };
 }

@@ -1,6 +1,7 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 import {
   DEFAULT_ASSIGNMENT_FIELD,
+  DEFAULT_CREATOR_AGENT,
   DEFAULT_FALLBACK_PROJECT,
   DEFAULT_LINEAR_AGENT_USER,
   DEFAULT_PROJECT_LEAD_AGENT_ID,
@@ -11,7 +12,7 @@ import { JOB_KEY } from "./intake.ts";
 const manifest: PaperclipPluginManifestV1 = {
   id: "lab.linear-intake",
   apiVersion: 1,
-  version: "0.2.0",
+  version: "0.2.1",
   displayName: "Linear Intake",
   description:
     "Every 2 minutes, finds Todo Linear issues delegated to the agent user and opens one Paperclip task per issue for the Project Lead. Reads Linear only; makes no LLM calls.",
@@ -89,6 +90,12 @@ const manifest: PaperclipPluginManifestV1 = {
         description: "Paperclip agent id or name that gets the task and the wakeup.",
         type: "string",
         default: DEFAULT_PROJECT_LEAD_AGENT_ID,
+      },
+      creatorAgent: {
+        title: "Task creator agent",
+        description: "Paperclip agent id or name recorded as the creator of each task (createdByAgentId).",
+        type: "string",
+        default: DEFAULT_CREATOR_AGENT,
       },
     },
   },
