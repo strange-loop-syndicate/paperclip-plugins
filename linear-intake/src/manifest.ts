@@ -1,10 +1,17 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
+import {
+  DEFAULT_ASSIGNMENT_FIELD,
+  DEFAULT_FALLBACK_PROJECT,
+  DEFAULT_LINEAR_AGENT_USER,
+  DEFAULT_PROJECT_LEAD_AGENT_ID,
+  DEFAULT_TEAM_KEYS,
+} from "./config.ts";
 import { JOB_KEY } from "./intake.ts";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: "lab.linear-intake",
   apiVersion: 1,
-  version: "0.1.0",
+  version: "0.2.0",
   displayName: "Linear Intake",
   description:
     "Every 2 minutes, finds Todo Linear issues delegated to the agent user and opens one Paperclip task per issue for the Project Lead. Reads Linear only; makes no LLM calls.",
@@ -15,6 +22,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "http.outbound",
     "secrets.read-ref",
     "projects.read",
+    "agents.read",
     "issues.read",
     "issues.create",
     "issues.wakeup",
@@ -26,54 +34,61 @@ const manifest: PaperclipPluginManifestV1 = {
   },
   instanceConfigSchema: {
     type: "object",
-    required: ["linearApiKey", "linearAgentUserId", "fallbackProjectId", "projectLeadAgentId"],
+    required: ["linearApiKey"],
     properties: {
       linearApiKey: {
         title: "Linear API key",
         description: "Paperclip secret holding a Linear API key with read access to the teams below.",
         format: "secret-ref",
       },
-      linearAgentUserId: {
-        title: "Linear agent user id",
-        description: "Linear user id of the agent user. Issues assigned (or delegated) to it are taken in.",
+      linearAgentUser: {
+        title: "Linear agent user",
+        description: "Name, display name or email of the Linear user that issues are delegated (or assigned) to. A Linear user id also works.",
         type: "string",
+        default: DEFAULT_LINEAR_AGENT_USER,
       },
       assignmentField: {
         title: "Match on",
-        description: "assignee = the issue's assignee is the agent user; delegate = the issue is delegated to the agent user.",
+        description: "delegate = the issue is delegated to the agent user; assignee = the issue's assignee is the agent user.",
         type: "string",
-        enum: ["assignee", "delegate"],
-        default: "assignee",
+        enum: ["delegate", "assignee"],
+        default: DEFAULT_ASSIGNMENT_FIELD,
       },
       teamKeys: {
         title: "Linear team keys",
         type: "array",
         items: { type: "string" },
-        default: ["M", "KNO"],
+        default: DEFAULT_TEAM_KEYS,
+      },
+      fallbackProject: {
+        title: "Fallback Paperclip project",
+        description:
+          "Project name or id. Used when the Linear issue has no project, or no Paperclip project has the Linear project's name.",
+        type: "string",
+        default: DEFAULT_FALLBACK_PROJECT,
       },
       projectMap: {
-        title: "Linear project to Paperclip project",
-        description: "Linear project id or name, and the Paperclip project id for its tasks.",
+        title: "Project overrides",
+        description:
+          "Optional. Issues go to the Paperclip project with the same name as their Linear project. Add a row only where the names differ.",
         type: "array",
         items: {
           type: "object",
-          required: ["linearProject", "paperclipProjectId"],
+          // paperclipProject is not required here: rows saved before 0.2.0 hold paperclipProjectId.
+          // parseConfig rejects a row that has neither.
+          required: ["linearProject"],
           properties: {
-            linearProject: { title: "Linear project id or name", type: "string" },
-            paperclipProjectId: { title: "Paperclip project id", type: "string" },
+            linearProject: { title: "Linear project name or id", type: "string" },
+            paperclipProject: { title: "Paperclip project name or id", type: "string" },
           },
         },
         default: [],
       },
-      fallbackProjectId: {
-        title: "Fallback Paperclip project id",
-        description: "Used when the Linear issue has no project, or its project is not mapped or not found.",
-        type: "string",
-      },
       projectLeadAgentId: {
-        title: "Project Lead agent id",
+        title: "Project Lead agent",
+        description: "Paperclip agent id or name that gets the task and the wakeup.",
         type: "string",
-        default: "e18b31d8-e737-4e89-8471-697d59b65453",
+        default: DEFAULT_PROJECT_LEAD_AGENT_ID,
       },
     },
   },
