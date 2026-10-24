@@ -25,8 +25,11 @@ const manifest = {
     type: "object",
     properties: {
       memosBaseUrl: { type: "string", description: "MemOS API base URL, e.g. http://127.0.0.1:8000" },
-      memosApiKeyRef: { type: "string", description: "Optional Paperclip secret reference holding a MemOS bearer token" },
-      openrouterApiKeyRef: { type: "string", description: "Paperclip secret reference holding the OpenRouter key used for Jev and the extractor. Capture is off without it." },
+      // `format: "secret-ref"` gives the settings form a secret picker. It saves
+      // { type: "secret_ref", secretId, version? } and the host binds that secret
+      // to this plugin at the field's path; resolve() refuses anything else.
+      memosApiKeyRef: { type: "object", format: "secret-ref", title: "MemOS API key", description: "Optional Paperclip secret holding a MemOS bearer token" },
+      openrouterApiKeyRef: { type: "object", format: "secret-ref", title: "OpenRouter API key", description: "Paperclip secret holding the OpenRouter key used for Jev and the extractor. Capture is off without it." },
       captureMode: {
         type: "string",
         enum: ["shadow", "save"],

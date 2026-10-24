@@ -24,6 +24,12 @@ const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 export const EVENT_BUDGET_MS = 25000;
 const RETRY_JOB_BUDGET_MS = 4 * 60 * 1000;
 export const RETRY_JOB_KEY = "retry-pending-captures";
+// The host allows 30 secret resolves a minute per company and plugin, and
+// loadConfig runs on every event. Resolved keys stay in worker memory only:
+// for SECRET_TTL_MS, a failed resolve for SECRET_RETRY_MS. A config save
+// drops the company's entries (onConfigChanged).
+export const SECRET_TTL_MS = 10 * 60 * 1000;
+export const SECRET_RETRY_MS = 60 * 1000;
 
 function num(value, fallback) {
   return Number.isFinite(value) && value > 0 ? value : fallback;
@@ -45,20 +51,48 @@ export function createMemoryPlugin({ fetchImpl = (url, init) => globalThis.fetch
   // onApiRequest gets no ctx of its own; setup stores it here.
   let hostCtx = null;
 
-  async function resolveSecret(ctx, ref, label) {
-    if (typeof ref !== "string" || ref.trim() === "") return null;
-    try {
-      return await ctx.secrets.resolve(ref);
-    } catch (err) {
-      ctx.logger.warn(`${label} secret could not be resolved`, { error: err.message });
-      return null;
-    }
+  // companyId -> Map(configPath + binding -> { value: Promise<string|null>, expiresAt })
+  const secretCache = new Map();
+
+  /**
+   * Resolve the `{ type: "secret_ref", secretId, version? }` binding stored at
+   * `configPath`. The host resolves only bound object refs, with the company
+   * named. Returns null when unset or unresolvable; capture then stays off.
+   */
+  function resolveSecret(ctx, companyId, configPath, ref, label) {
+    if (ref == null || ref === "") return null;
+    let entries = secretCache.get(companyId);
+    if (!entries) secretCache.set(companyId, (entries = new Map()));
+    const key = `${configPath}:${JSON.stringify(ref)}`;
+    const hit = entries.get(key);
+    // expiresAt is null while the resolve is in flight; callers share it.
+    if (hit && (hit.expiresAt === null || hit.expiresAt > now())) return hit.value;
+    const entry = { value: null, expiresAt: null };
+    const settle = (value, ttl) => {
+      entry.expiresAt = now() + ttl;
+      return value;
+    };
+    entry.value = (async () => {
+      if (typeof ref !== "object" || ref.type !== "secret_ref") {
+        ctx.logger.warn(`${label} is not a secret binding; pick the secret again in the plugin settings`, { companyId, configPath });
+        return settle(null, SECRET_RETRY_MS);
+      }
+      try {
+        const value = await withTimeout(ctx.secrets.resolve(ref, { companyId, configPath }), HOST_CALL_TIMEOUT_MS, "secrets.resolve");
+        return settle(typeof value === "string" && value !== "" ? value : null, SECRET_TTL_MS);
+      } catch (err) {
+        ctx.logger.warn(`${label} secret could not be resolved`, { companyId, configPath, error: err.message });
+        return settle(null, SECRET_RETRY_MS);
+      }
+    })();
+    entries.set(key, entry);
+    return entry.value;
   }
 
   async function loadConfig(ctx, companyId) {
     const raw = (await ctx.config.get(companyId)) ?? {};
-    const memosApiKey = await resolveSecret(ctx, raw.memosApiKeyRef, "memos api key");
-    const openrouterKey = await resolveSecret(ctx, raw.openrouterApiKeyRef, "openrouter api key");
+    const memosApiKey = await resolveSecret(ctx, companyId, "memosApiKeyRef", raw.memosApiKeyRef, "memos api key");
+    const openrouterKey = await resolveSecret(ctx, companyId, "openrouterApiKeyRef", raw.openrouterApiKeyRef, "openrouter api key");
     const base = (typeof raw.openrouterBaseUrl === "string" && raw.openrouterBaseUrl.trim() ? raw.openrouterBaseUrl : OPENROUTER_BASE_URL).replace(/\/+$/, "");
     const captureProjectIds = Array.isArray(raw.captureProjectIds) ? raw.captureProjectIds.filter((p) => typeof p === "string" && p !== "") : [];
     return {
@@ -298,6 +332,11 @@ export function createMemoryPlugin({ fetchImpl = (url, init) => globalThis.fetch
   }
 
   return definePlugin({
+    // Every config read and cache entry is keyed by companyId, so one worker
+    // may serve several companies. Without this the host refuses a second
+    // company's configChanged.
+    multiCompanyConfig: true,
+
     async setup(ctx) {
       ctx.events.on("agent.run.finished", safe(ctx, "run result", (e) => onRunFinished(ctx, e)));
       ctx.events.on("issue.comment.created", safe(ctx, "comment", (e) => onCommentCreated(ctx, e)));
@@ -346,6 +385,14 @@ export function createMemoryPlugin({ fetchImpl = (url, init) => globalThis.fetch
         hostCtx?.logger.warn(`api route ${input.routeKey} failed: ${err.message}`);
         return { status: 503, body: { error: "memory plugin unavailable" } };
       }
+    },
+
+    // Config is read per call through ctx.config.get, so a save only has to
+    // drop the cached secrets. Handling it here also stops the host from
+    // restarting the worker on every save.
+    async onConfigChanged(_config, context) {
+      if (context?.companyId) secretCache.delete(context.companyId);
+      else secretCache.clear();
     },
 
     async onHealth() {
