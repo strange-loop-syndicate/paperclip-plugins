@@ -7,6 +7,7 @@ import { JOB_KEY, STATE_NAMESPACE } from "../src/intake.ts";
 
 const COMPANY = "11111111-1111-4111-8111-111111111111";
 const PROJECT_LEAD = "e18b31d8-e737-4e89-8471-697d59b65453";
+const DIRECTOR = "cccccccc-0000-4000-8000-0000000000d1";
 const AGENT_USER = "389b91a0-1540-453a-b3c8-331850dfae9e";
 const FALLBACK_PROJECT = "aaaaaaaa-0000-4000-8000-000000000001";
 const LAB_PROJECT = "aaaaaaaa-0000-4000-8000-000000000002";
@@ -94,8 +95,30 @@ function existingIssue(id: string, title: string, status = "in_progress") {
   return { id, companyId: COMPANY, title, status, projectId: null, assigneeAgentId: null } as never;
 }
 
-async function boundHarness(config: Record<string, unknown> = CONFIG): Promise<TestHarness> {
+/**
+ * Make `issues.create` behave like the live host (plugin-host-services.js): an
+ * omitted status lands as `backlog`, and `actor.actorAgentId` becomes
+ * `createdByAgentId`. The SDK harness defaults to `todo` and drops the actor.
+ */
+function likeHostCreate(harness: TestHarness): void {
+  const create = harness.ctx.issues.create.bind(harness.ctx.issues);
+  harness.ctx.issues.create = async (input) => {
+    const task = await create({ ...input, status: input.status ?? "backlog" });
+    task.createdByAgentId = input.actor?.actorAgentId ?? null;
+    task.createdByUserId = input.actor?.actorUserId ?? null;
+    return task;
+  };
+}
+
+function newHarness(config: Record<string, unknown>): TestHarness {
   const harness = createTestHarness({ manifest, config });
+  likeHostCreate(harness);
+  harness.seed({ agents: [agent(DIRECTOR, "Project Director")] });
+  return harness;
+}
+
+async function boundHarness(config: Record<string, unknown> = CONFIG): Promise<TestHarness> {
+  const harness = newHarness(config);
   harness.seed({ projects: PROJECTS.map(([id, name]) => project(id, name)) });
   await plugin.definition.setup(harness.ctx);
   await plugin.definition.onConfigChanged?.(config, { companyId: COMPANY });
@@ -129,6 +152,9 @@ test("new issue -> one Project Lead task with the URL only, one wakeup, key reco
   assert.equal(task.assigneeAgentId, PROJECT_LEAD);
   assert.equal(task.projectId, FALLBACK_PROJECT);
   assert.equal(task.originId, "M-123");
+  assert.equal(task.status, "todo");
+  assert.equal(task.createdByAgentId, DIRECTOR);
+  assert.equal(task.createdByUserId, null);
 
   assert.equal(wakeups.mock.callCount(), 1);
   assert.equal(wakeups.mock.calls[0]!.arguments[0], task.id);
@@ -237,7 +263,7 @@ test("restart: a second tick after a lost state write creates no duplicate", asy
   await harness.runJob(JOB_KEY);
   await harness.ctx.state.delete({ scopeKind: "company", scopeId: COMPANY, namespace: STATE_NAMESPACE, stateKey: "M-123" });
 
-  const restarted = createTestHarness({ manifest, config: CONFIG });
+  const restarted = newHarness(CONFIG);
   restarted.seed({ issues: await listTasks(harness), projects: [project(FALLBACK_PROJECT, "Ops")] });
   await plugin.definition.setup(restarted.ctx);
   await plugin.definition.onConfigChanged?.(CONFIG, { companyId: COMPANY });
@@ -380,6 +406,41 @@ test("a failed wakeup still records the key, and the job reports the failure", a
   await assert.rejects(harness.runJob(JOB_KEY), /M-123/);
   assert.equal((await listTasks(harness)).length, 1);
   assert.ok(stateFor(harness, "M-123"));
+});
+
+test("the task is created in todo, so the host wakeup accepts it", async (t) => {
+  const harness = await boundHarness();
+  const creates = t.mock.method(harness.ctx.issues, "create");
+  stubFetch(t, () => linearOk([linearIssue("M-695", "Live intake")]));
+
+  // The harness requestWakeup refuses backlog, done and cancelled, like the host.
+  await harness.runJob(JOB_KEY);
+
+  assert.equal(creates.mock.calls[0]!.arguments[0].status, "todo");
+  assert.deepEqual(creates.mock.calls[0]!.arguments[0].actor, { actorAgentId: DIRECTOR });
+  assert.ok(!harness.logs.some((l) => l.level === "error"));
+});
+
+test("creator agent: by name, by id; no match -> clear error, nothing created", async (t) => {
+  const OTHER = "cccccccc-0000-4000-8000-0000000000d2";
+  const byName = await boundHarness({ ...CONFIG, creatorAgent: "chief of staff" });
+  byName.seed({ agents: [agent(OTHER, "Chief of Staff")] });
+  stubFetch(t, () => linearOk([linearIssue("M-1", "Task")]));
+  await byName.runJob(JOB_KEY);
+  assert.equal((await listTasks(byName))[0]!.createdByAgentId, OTHER);
+
+  const byId = await boundHarness({ ...CONFIG, creatorAgent: OTHER });
+  await byId.runJob(JOB_KEY);
+  assert.equal((await listTasks(byId))[0]!.createdByAgentId, OTHER);
+
+  const missing = newHarness(CONFIG);
+  missing.seed({ projects: PROJECTS.map(([id, name]) => project(id, name)) });
+  await plugin.definition.setup(missing.ctx);
+  await plugin.definition.onConfigChanged?.(CONFIG, { companyId: COMPANY });
+  const agents = t.mock.method(missing.ctx.agents, "list", async () => []);
+  await assert.rejects(missing.runJob(JOB_KEY), /creatorAgent "Project Director": no Paperclip agent/);
+  assert.ok(agents.mock.callCount() > 0);
+  assert.equal((await listTasks(missing)).length, 0);
 });
 
 test("no bound company -> no Linear call", async (t) => {

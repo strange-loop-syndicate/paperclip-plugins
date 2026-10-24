@@ -4,7 +4,7 @@ Turns Linear issues delegated to the agent user into Paperclip tasks for the Pro
 
 - **When:** a plugin job every 2 minutes (`*/2 * * * *`). An idle tick is one Linear query and no agent run (plus one user lookup after a worker start, when the agent user is given by name).
 - **Which issues:** teams in `teamKeys`, state type `unstarted` (Todo), delegate (or assignee) = the agent user.
-- **What it creates:** one task per new Linear key, titled `[KEY] <Linear title>`. The body is the Linear URL only. Assigned to the Project Lead, in the Paperclip project with the same name as the Linear project. Then it wakes the Project Lead.
+- **What it creates:** one task per new Linear key, titled `[KEY] <Linear title>`. The body is the Linear URL only. Status `todo`, assigned to the Project Lead, created by the Project Director (`createdByAgentId`), in the Paperclip project with the same name as the Linear project. Then it wakes the Project Lead.
 - **What it never does:** write to Linear, call an LLM, or copy the Linear description, status or comments. The Project Lead owns all Linear writes.
 
 ## Idempotency
@@ -22,7 +22,7 @@ The task list is read only when Linear returns a key that is not in state. It is
 |---|---|
 | Linear HTTP error, GraphQL error, timeout (20 s) or network error | Error in the plugin log, job run marked failed, nothing created. The next tick retries. |
 | `linearAgentUser` matches no Linear user, or more than one | Error in the log naming the value and the matches; job run marked failed, nothing created. The next tick retries. |
-| `fallbackProject` or `projectLeadAgentId` matches no project/agent, or more than one | Same: error, job failed, nothing created. Checked only on a tick that has an issue to create. |
+| `fallbackProject`, `projectLeadAgentId` or `creatorAgent` matches no project/agent, or more than one | Same: error, job failed, nothing created. Checked only on a tick that has an issue to create. |
 | No Paperclip project has the Linear project's name | The task goes to the fallback project. One warning per run lists the unmatched Linear project names. |
 | Two Paperclip projects have the name, or a `projectMap` target is not found | Warning; the task goes to the fallback project. |
 | Wakeup refused (budget, blockers) | The task stays and the key is recorded; the job run is marked failed. The wakeup is not retried. Wake the Project Lead by hand. |
@@ -43,6 +43,7 @@ Only `linearApiKey` is required. Every other field has a working default, and ta
 | `fallbackProject` | `Ops` | Paperclip project name or id, for issues with no Linear project or no project of the same name. |
 | `projectMap` | empty | Optional overrides, only where names differ: `linearProject` (Linear project name or id) → `paperclipProject` (Paperclip project name or id). An override wins over the name match. |
 | `projectLeadAgentId` | `e18b31d8-e737-4e89-8471-697d59b65453` | Paperclip agent that gets the task and the wakeup: an id, or a name such as `Project Lead`. |
+| `creatorAgent` | `Project Director` | Paperclip agent recorded as the task's creator (`createdByAgentId`): a name or an id. Chain-of-command rules send questions on a root `[KEY]` task to its creator. |
 
 **Project choice.** A `projectMap` override wins. Otherwise the issue goes to the non-archived Paperclip project whose name equals the Linear project name, compared case-insensitively after trimming spaces. Otherwise it goes to `fallbackProject`.
 
@@ -95,3 +96,5 @@ Install needs an instance admin (board) credential. Agent API keys get `403 Boar
 
 The host loads the built files in place. After a code change, run `npm run build` and reload or upgrade the plugin from the Plugin Manager.
 0.2.0 adds the `agents.read` capability (to find the Project Lead by name), so the upgrade may ask for capability approval again.
+
+**0.2.1** creates tasks in `todo` and with the Project Director as creator. Before it, tasks landed in the host default `backlog`, so the wakeup failed with `Issue is not wakeable in status: backlog`, and `createdByAgentId` was empty. No capability or required config changes.
