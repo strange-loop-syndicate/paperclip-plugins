@@ -28,7 +28,9 @@ echo "re-applying local patches"
 echo "starting server"
 cd "$PAPERCLIP_ROOT" || exit 1
 HOME=/Users/claude PAPERCLIP_HOME=$PAPERCLIP_ROOT/state/paperclip PAPERCLIP_INSTANCE_ID=lab PAPERCLIP_TELEMETRY_DISABLED=1 \
-  nohup "$NODE" "$ENTRY" run >>"$LOG" 2>&1 </dev/null &
+  /usr/bin/perl -MPOSIX -e 'POSIX::setsid(); $SIG{HUP} = "IGNORE"; exec @ARGV or die "exec: $!"' -- \
+  "$NODE" "$ENTRY" run >>"$LOG" 2>&1 </dev/null &
+# Not nohup: macOS nohup exits with "can't detach from console" in a terminal, before node runs.
 echo "new server pid $!"
 
 i=0
