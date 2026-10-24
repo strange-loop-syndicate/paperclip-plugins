@@ -136,7 +136,7 @@ export function createCapture({ now = () => Date.now() } = {}) {
   /**
    * Process one item. `retain(scope, content, metadata)` stores a memory and
    * returns { status }. Returns a status string:
-   * duplicate | ignored | no-text | skipped | empty | shadow | stored | queued.
+   * duplicate | ignored | no-text | skipped | empty | error | shadow | stored | queued.
    */
   async function processItem(ctx, cfg, item, { retain, deadline }) {
     const lockKey = `${item.companyId}:${item.key}`;
@@ -168,7 +168,10 @@ export function createCapture({ now = () => Date.now() } = {}) {
     }
     if (!comment || (comment.authorType !== "agent" && comment.authorType !== "user")) return "ignored";
 
+    // The scope a save writes to; shadow entries carry its projectId too.
+    const scope = scopeFor({ companyId, projectId: issue.projectId ?? UNSCOPED_PROJECT });
     const ids = {
+      projectId: scope.projectId,
       issueId: issue.id,
       issueIdentifier: issue.identifier ?? null,
       commentId: comment.id,
@@ -204,9 +207,16 @@ export function createCapture({ now = () => Date.now() } = {}) {
     try {
       extracted = await cfg.extractor.extract({ text, task, source, hintType: gate.type }, { deadline });
     } catch (err) {
-      return queue(ctx, item, `extractor: ${err.message}`);
+      if (!err?.badReply) return queue(ctx, item, `extractor: ${err.message}`);
+      // A bad answer repeats on every retry: record it once and stop.
+      const error = `extractor: ${err.message}`;
+      ctx.logger.warn(`memory capture gave up on an item: ${error}`, { key: item.key, companyId });
+      await logVerdict(ctx, cfg, item, { ...ids, verdict: "error", error, type: gate.type, probs: gate.probs, jevCostUsd, extractCostUsd: err.costUsd ?? null });
+      await markDone(ctx, item, "error");
+      return "error";
     }
     const record = { ...ids, type: gate.type, probs: gate.probs, memories: extracted.memories, jevCostUsd, extractCostUsd: extracted.costUsd };
+    if (extracted.salvaged) record.salvaged = true;
     if (extracted.memories.length === 0) {
       await logVerdict(ctx, cfg, item, { ...record, verdict: "empty" });
       await markDone(ctx, item, "empty");
@@ -218,7 +228,6 @@ export function createCapture({ now = () => Date.now() } = {}) {
       return "shadow";
     }
 
-    const scope = scopeFor({ companyId, projectId: issue.projectId ?? UNSCOPED_PROJECT });
     const results = await Promise.allSettled(
       extracted.memories.map((m) =>
         retain(scope, m.content, {
@@ -238,8 +247,9 @@ export function createCapture({ now = () => Date.now() } = {}) {
     return "stored";
   }
 
-  // Every failure is retried the same way, an outage or a malformed answer:
-  // both are rare, and the queue is bounded by age.
+  // Every failure with no answer is retried the same way, an outage or a
+  // malformed body: both are rare, and the queue is bounded by age. A model
+  // answer that is unusable is not queued (see the extractor's catch above).
   async function queue(ctx, item, reason) {
     ctx.logger.warn(`memory capture deferred: ${reason}`, { key: item.key, companyId: item.companyId });
     await enqueue(ctx, item, reason);

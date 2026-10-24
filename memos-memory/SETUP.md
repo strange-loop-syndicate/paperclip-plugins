@@ -145,7 +145,7 @@ Sharing is off by default. The **Memory sharing** page under company settings is
 | **Items** | Each new agent or board comment (`issue.comment.created`), and each finished run's newest agent comment (`agent.run.finished`). Both use the key `comment:<id>`, so one comment is processed once |
 | **Text** | Fenced code blocks and `<details>` sections are cut first. A comment with no prose left is skipped |
 | **Jev gate** | One call to `typesafe/jev-1.13`. Questions: has a decision / lesson / outcome / durable fact, and "routine status only". The item passes if a content question is ≥ `saveP` and routine is < `routineP`. Jev never writes text |
-| **Extraction** | One Haiku call per passed item: "extract the decisions, lessons, outcomes and facts, one short sentence each, drop routine status". At most 3 memories, 300 characters each, each with its own type. An empty list saves nothing |
+| **Extraction** | One Haiku call per passed item: "extract the decisions, lessons, outcomes and facts, one short sentence each, drop routine status". At most 3 memories, 300 characters each, each with its own type. An empty list saves nothing. A reply cut off at `max_tokens` or with invalid JSON keeps its complete memory objects (`salvaged: true`). A reply with no usable list is an `error` verdict, not a retry |
 | **Save** | In `save` mode, each memory is a sync `fast` add with our IDs. Raw comment text is never stored |
 | **Shadow** | In `shadow` mode (the default), verdicts and extracted memories are logged and nothing is stored |
 
@@ -157,7 +157,7 @@ Sharing is off by default. The **Memory sharing** page under company settings is
 
 ## Shadow log and report
 
-- **Where:** plugin state, one key per company and UTC day (namespace `memos-shadow`), at most 2000 entries a day. Each entry holds IDs, the verdict, Jev probabilities, the extracted memories and the cost of both calls. It holds no comment text.
+- **Where:** plugin state, one key per company and UTC day (namespace `memos-shadow`), at most 2000 entries a day. Each entry holds IDs (including the `projectId` a save would write to), the verdict, Jev probabilities, the extracted memories and the cost of both calls. It holds no comment text.
 - **Read it:** `GET /api/plugins/sls.memos-memory/api/shadow-log?companyId=<id>&date=YYYY-MM-DD` as a board user or an agent of that company. The answer also lists the items waiting for a retry.
 - **Server log:** every verdict is also logged as `memory capture verdict`, in both modes.
 
@@ -167,6 +167,7 @@ Sharing is off by default. The **Memory sharing** page under company settings is
 - **Retry job:** `retry-pending-captures` runs every 10 minutes. Waits grow from 10 minutes to 2 hours. After 24 h an item is dropped with a warning. The queue holds at most 1000 items.
 - **Inline budget:** an event handler stops after 25 s (the host gives up at 30 s) and leaves the rest to the job. Tasks never wait on capture.
 - **Bad key:** 401, 402 and 403 are not retried inside one call; the item still waits for the job.
+- **Bad answer, not an outage:** when the extractor answers but no memories list can be read, the item gets an `error` verdict with the reason (finish reason and reply length, never the reply text) and is marked done. At temperature 0 a retry gives the same answer.
 
 ## Failure behaviour
 

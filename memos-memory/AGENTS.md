@@ -2,7 +2,7 @@
 
 - **What:** Paperclip memory plugin backed by MemOS (`src/plugin.js`, capture in `src/capture.js`), its sharing settings page (`ui/index.js`), and the pre-prompt recall wrapper for the `claude_local` / `codex_local` adapters (`src/wrapper/`, `bin/`). See `SETUP.md`.
 - **Language:** plain ESM JavaScript, Node 20+. No build step, also for the UI (`React.createElement`, no JSX). Only `@paperclipai/plugin-sdk` as a dependency. The wrapper must stay dependency-free.
-- **Tests:** `npm test`. They use a fake MemOS server and need no live services. Every behaviour change needs a test. Break the code once to check that the test catches it.
+- **Tests:** `npm test`; `npm run check` adds a syntax check of every script and a manifest load. They use a fake MemOS server and need no live services. Every behaviour change needs a test. Break the code once to check that the test catches it.
 - **Invariants:**
   - Never read across companies.
   - Sharing is opt-in only, set on the settings page by a board user.
