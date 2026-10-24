@@ -13,6 +13,7 @@ const NAME = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 
 /**
  * A comment triggers when its trimmed body starts with `!`.
+ * - `![…` (a markdown image, such as a pasted screenshot) → none.
  * - `!help` → list of shortcuts.
  * - `!<name>` alone, matching a shortcut → that shortcut.
  * - anything else → the text after `!` runs in a shell (may be multi-line).
@@ -21,7 +22,7 @@ export function parseComment(body: string, commands: BangCommand[]): Parsed {
   const text = body.trim();
   if (!text.startsWith("!")) return { kind: "none" };
   const rest = text.slice(1).trim();
-  if (!rest) return { kind: "none" };
+  if (!rest || rest.startsWith("[")) return { kind: "none" };
   if (rest.toLowerCase() === "help") return { kind: "help" };
   if (NAME.test(rest)) {
     const command = commands.find((c) => c.name === rest.toLowerCase());

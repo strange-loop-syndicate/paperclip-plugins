@@ -149,6 +149,16 @@ describe("bang commands", () => {
     expect(await replies(h)).toEqual([]);
   });
 
+  it("ignores an owner comment that starts with a pasted image", async () => {
+    const h = setup();
+    await h.plugin.definition.setup(h.harness.ctx);
+    await comment(h, "c1", "![](/api/attachments/x/content)\n\nlook at this", { user: "owner" });
+    expect(h.ran).toEqual([]);
+    expect(h.detached).toEqual([]);
+    expect(await replies(h)).toEqual([]);
+    expect(h.wakes).not.toHaveBeenCalled();
+  });
+
   it("replies first, then starts detached commands", async () => {
     const h = setup();
     await h.plugin.definition.setup(h.harness.ctx);
@@ -208,6 +218,20 @@ describe("parse and format", () => {
     expect(run("!")).toBe("none");
     expect((run("!status now") as BangCommand).argv).toEqual(["/bin/zsh", "-lc", "status now"]);
     expect((run("!echo a\necho b") as BangCommand).argv[2]).toBe("echo a\necho b");
+  });
+
+  it("ignores comments that start with a markdown image", () => {
+    const kind = (t: string) => parseComment(t, commands).kind;
+    expect(kind("![](/api/attachments/x/content) text")).toBe("none");
+    expect(kind("![alt](url)")).toBe("none");
+    expect(kind("  ![](/api/attachments/x/content)\n\nsee the screenshot")).toBe("none");
+    expect(kind("!status")).toBe("run");
+    expect(kind("!help")).toBe("help");
+    expect((parseComment("!ls -la", commands) as { command: BangCommand }).command.argv).toEqual([
+      "/bin/zsh",
+      "-lc",
+      "ls -la",
+    ]);
   });
 
   it("labels long and multi-line shell commands", () => {
