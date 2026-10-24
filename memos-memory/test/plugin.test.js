@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, beforeEach, describe, it } from "node:test";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
+import { contentHash } from "../src/content.js";
 import manifest from "../src/manifest.js";
 import { createMemoryPlugin, RETRY_JOB_KEY, SECRET_RETRY_MS, SECRET_TTL_MS } from "../src/plugin.js";
 import { fakeHostSecrets, RATE_LIMIT, secretRef } from "./helpers/fake-secrets.js";
@@ -79,10 +80,14 @@ const jevCalls = (server) => server.llmRequests("/systemone");
 const extractCalls = (server) => server.llmRequests("/chat/completions");
 const runCtx = (over = {}) => ({ agentId: "agent-1", runId: "run-9", companyId: A, projectId: "p1", ...over });
 const pendingOf = (h) => h.getState({ scopeKind: "instance", namespace: "memos-pending", stateKey: "queue" }) ?? [];
+const MEMORY = "Pre-prompt recall runs in a command wrapper, not a plugin hook.";
+const dedupKey = (content, projectId = "p1") => ({ scopeKind: "company", scopeId: A, namespace: "memos-dedup", stateKey: `${projectId}:${contentHash(content)}` });
+const verdictLog = (h) => h.logs.filter((l) => l.message === "memory capture verdict").at(-1)?.meta;
 const api = (h, routeKey, query, companyId = A) => h.plugin.definition.onApiRequest({ routeKey, method: "GET", path: `/${routeKey}`, params: {}, query, body: null, actor: { actorType: "agent", actorId: "agent-1" }, companyId, headers: {} });
 
 function resetServer(server) {
   server.state.mode = "ok";
+  server.state.addMode = "ok";
   server.state.store.length = 0;
   server.state.requests.length = 0;
   server.state.llm.mode = "ok";
@@ -617,6 +622,41 @@ describe("capture: outages wait in a retry queue", () => {
     assert.equal(pendingOf(h).length, 0);
   });
 
+  it("a normal add is stored, sets the dedup marker, and leaves nothing waiting", async () => {
+    const h = await setup(server, {}, {}, { now: clock() });
+    await h.emit("issue.comment.created", ...commentEvent());
+    assert.equal(server.state.store.length, 1);
+    assert.equal(pendingOf(h).length, 0);
+    assert.ok(h.getState(dedupKey(MEMORY)), "dedup marker set");
+    const verdict = verdictLog(h);
+    assert.deepEqual(verdict.stored, ["stored"]);
+    assert.equal(verdict.error, undefined);
+  });
+
+  it("MemOS answers 200 but stores nothing: failed, no dedup marker, and the retry job stores it", async () => {
+    const now = clock();
+    server.state.addMode = "empty";
+    const h = await setup(server, {}, {}, { now });
+    await h.emit("issue.comment.created", ...commentEvent());
+    assert.equal(adds(server).length, 1, "MemOS was asked");
+    assert.equal(server.state.store.length, 0);
+    assert.equal(h.getState(dedupKey(MEMORY)) ?? null, null, "no dedup marker for a memory MemOS did not store");
+    const verdict = verdictLog(h);
+    assert.deepEqual(verdict.stored, ["failed"]);
+    assert.equal(verdict.error, "memos: MemOS answered with no created memory IDs");
+    const queue = pendingOf(h);
+    assert.equal(queue.length, 1, "the item waits for a retry");
+    assert.equal(queue[0].lastError, "memos: MemOS answered with no created memory IDs");
+    assert.doesNotMatch(JSON.stringify({ verdict: verdict.error, queue }), /command wrapper/, "the reason holds no memory or comment text");
+
+    server.state.addMode = "ok";
+    now.advance(11 * 60 * 1000);
+    await h.runJob(RETRY_JOB_KEY);
+    assert.equal(server.state.store.length, 1, "stored on retry");
+    assert.equal(pendingOf(h).length, 0);
+    assert.ok(h.getState(dedupKey(MEMORY)), "dedup marker set once MemOS stored it");
+  });
+
   it("a bad key fails fast without retries and waits", async () => {
     server.state.llm.mode = "error401";
     const h = await setup(server);
@@ -731,6 +771,19 @@ describe("plugin tools and sharing", () => {
     assert.equal(first.data.status, "stored");
     assert.equal(second.data.status, "duplicate");
     assert.equal(adds(server)[0].body.info.kind, "fact");
+  });
+
+  it("memory_retain reports failure when MemOS stores nothing, and the next call tries again", async () => {
+    const h = await setup(server);
+    server.state.addMode = "empty";
+    const first = await h.executeTool("memory_retain", { content: "Deploys go through DevOps" }, runCtx());
+    assert.equal(first.data.status, "failed");
+    assert.match(first.content, /not stored/);
+    assert.equal(h.getState(dedupKey("Deploys go through DevOps")) ?? null, null);
+    server.state.addMode = "ok";
+    const second = await h.executeTool("memory_retain", { content: "Deploys go through DevOps" }, runCtx());
+    assert.equal(second.data.status, "stored");
+    assert.equal(adds(server).length, 2);
   });
 
   it("memory_retain refuses an issue from another project and writes nothing", async () => {

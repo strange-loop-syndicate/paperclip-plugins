@@ -8,6 +8,8 @@ import { createServer } from "node:http";
 export async function startFakeServer({ issues = {} } = {}) {
   const state = {
     mode: "ok", // ok | slow | error500
+    // ok | empty (200 with no created memories, as when the MemOS embedder fails)
+    addMode: "ok",
     issueMode: "ok", // ok | hang (Paperclip issue lookup never answers)
     delayMs: 0,
     issues: { ...issues },
@@ -78,8 +80,11 @@ export async function startFakeServer({ issues = {} } = {}) {
 
       if (req.url === "/product/add") {
         const b = entry.body;
+        // MemOS 2.0.33 answers 200 even when it prepared nothing to add.
+        if (state.addMode === "empty") return send(200, { code: 200, message: "Memory added successfully", data: [] });
         state.store.push({ userId: b.user_id, cubeId: b.mem_cube_id, content: b.memory_content, info: b.info ?? {} });
-        return send(200, { code: 200, message: "ok", data: null });
+        const memoryId = `mem-${state.store.length}`;
+        return send(200, { code: 200, message: "Memory added successfully", data: [{ memory: b.memory_content, memory_id: memoryId, memory_type: "UserMemory", cube_id: b.mem_cube_id }] });
       }
       if (req.url === "/product/search") {
         const b = entry.body;

@@ -59,6 +59,18 @@ function toMemory(item) {
   return { content, metadata };
 }
 
+/**
+ * The IDs of the memories an add created. MemOS 2.0.33 answers
+ * `{ data: [{ memory, memory_id, memory_type, cube_id }] }`, and answers 200
+ * with `data: []` when it stored nothing (for example when the embedder
+ * fails: "No add/update items prepared").
+ */
+export function addedMemoryIds(json) {
+  const data = json?.data;
+  if (!Array.isArray(data)) return [];
+  return data.map((item) => item?.memory_id).filter((id) => typeof id === "string" && id !== "");
+}
+
 /** Pull memory items out of the known MemOS search response shapes. */
 export function parseSearchResponse(json) {
   const data = json?.data ?? json;
@@ -113,11 +125,14 @@ export function createMemosClient({ baseUrl, apiKey = null, fetchImpl = globalTh
      * given, with its `info`. The default async add has an LLM rewrite the
      * text later, and the rewritten memory loses `info` (checked live in
      * SLS-63), so recall could no longer filter it by company.
+     * Only an answer that names created memory IDs counts as stored; the
+     * error never carries the memory text MemOS echoes back.
      */
     async add({ scope, content, metadata = {}, timeoutMs = DEFAULT_CAPTURE_TIMEOUT_MS, signal }) {
       if (!configured) return { ok: false, error: "memos not configured" };
+      let json;
       try {
-        await postJson({
+        json = await postJson({
           fetchImpl,
           url: joinUrl(baseUrl, addPath),
           apiKey,
@@ -133,11 +148,17 @@ export function createMemosClient({ baseUrl, apiKey = null, fetchImpl = globalTh
             info: { ...metadata, companyId: scope.companyId, projectId: scope.projectId },
           },
         });
-        return { ok: true };
       } catch (err) {
         logger.warn?.(`memos add failed; memory not stored (${err.message})`, { scope: scope.key });
         return { ok: false, error: err.message };
       }
+      const memoryIds = addedMemoryIds(json);
+      if (memoryIds.length === 0) {
+        const error = "MemOS answered with no created memory IDs";
+        logger.warn?.(`memos add failed; memory not stored (${error})`, { scope: scope.key });
+        return { ok: false, error };
+      }
+      return { ok: true, memoryIds };
     },
   };
 }
