@@ -1,0 +1,18 @@
+{
+  "name": "linear-cli",
+  "version": "0.1.0",
+  "private": true,
+  "description": "No-dependency Linear GraphQL CLI for agents: read issues and comments, set state, comment, resolve threads",
+  "type": "module",
+  "bin": {
+    "linear": "./bin/linear.mjs"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "lint": "node --check bin/linear.mjs && node --check src/cli.mjs && node --check src/linear.mjs",
+    "check": "npm run lint && npm test"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}
