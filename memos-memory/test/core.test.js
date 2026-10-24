@@ -144,7 +144,7 @@ describe("extractor reply parsing", () => {
   });
 
   it("keeps braces inside memory text", () => {
-    const withBraces = { type: "fact", text: "The route is /api/issues/{id}/comments." };
+    const withBraces = { type: "fact", text: "A lone } or { in a path such as /api/{id is kept." };
     assert.deepEqual(parseReply(JSON.stringify({ memories: [withBraces] })).memories, [withBraces]);
   });
 
