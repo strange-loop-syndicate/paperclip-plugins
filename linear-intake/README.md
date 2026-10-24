@@ -66,8 +66,9 @@ Only `linearApiKey` is required. Every other field has a working default, and ta
 
 Needs Node 24+.
 
+In a worktree of this repo, not in a folder Paperclip loads:
+
 ```sh
-cd /Users/claude/work/paperclip-plugins-repo/linear-intake
 npm ci
 npm run check     # typecheck + tests + build + manifest validation
 ```
@@ -78,23 +79,20 @@ npm run check     # typecheck + tests + build + manifest validation
 
 Install needs an instance admin (board) credential. Agent API keys get `403 Board access required`.
 
-1. **Build** in the folder you install from: `npm ci && npm run check` (`dist/` is not committed).
-2. **Install** from a board session:
+1. **Install or update** only through the release script, from a merged commit (root [`README.md`](../README.md) → "Install and update"). It builds a read-only release copy (`dist/` is not committed) and installs from it. Never install from a checkout.
 
-   ```http
-   POST /api/plugins/install
-   Content-Type: application/json
-
-   { "packageName": "/Users/claude/work/paperclip-plugins-repo/linear-intake", "isLocalPath": true }
+   ```sh
+   node scripts/release-install.mjs linear-intake              # update
+   node scripts/release-install.mjs linear-intake --allow-new  # first install
    ```
 
-   The CLI sends the same request: `npx paperclipai plugin install --local <path> --api-base http://127.0.0.1:3100`, run from `/Users/claude/work/paperclip/app`.
-3. **Approve** the capabilities in Plugin Manager (`/company/settings/instance/plugins`) → **Review**, if the plugin is not `ready`.
-4. **Secret:** add the Linear API key as a company secret.
-5. **Configure** the plugin in that company: pick the secret in `linearApiKey` and save. The other fields keep their defaults unless a name differs. Saving delivers the config to the worker; the next 2-minute tick starts intake.
-6. **Check:** the plugin's job runs in Plugin Manager show `succeeded`. A test issue assigned to the agent user in Todo shows up as `[KEY] …` for the Project Lead within about 2 minutes.
+2. **Approve** the capabilities in Plugin Manager (`/company/settings/instance/plugins`) → **Review**, if the plugin is not `ready`.
+3. **Secret:** add the Linear API key as a company secret.
+4. **Configure** the plugin in that company: pick the secret in `linearApiKey` and save. The other fields keep their defaults unless a name differs. Saving delivers the config to the worker; the next 2-minute tick starts intake.
+5. **Check:** the plugin's job runs in Plugin Manager show `succeeded`. A test issue assigned to the agent user in Todo shows up as `[KEY] …` for the Project Lead within about 2 minutes.
 
-The host loads the built files in place. After a code change, run `npm run build` and reload or upgrade the plugin from the Plugin Manager.
+- **Check after an update:** within 2 minutes, Plugin Manager → Linear Intake → job runs shows a new `succeeded` run. An update keeps the config, so steps 2–4 are for a first install only.
+
 0.2.0 adds the `agents.read` capability (to find the Project Lead by name), so the upgrade may ask for capability approval again.
 
 **0.2.1** creates tasks in `todo` and with the Project Director as creator. Before it, tasks landed in the host default `backlog`, so the wakeup failed with `Issue is not wakeable in status: backlog`, and `createdByAgentId` was empty. No capability or required config changes.
