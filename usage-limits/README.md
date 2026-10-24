@@ -78,6 +78,8 @@ node scripts/release-install.mjs usage-limits              # update
 node scripts/release-install.mjs usage-limits --allow-new  # first install
 ```
 
+Run it from a fresh worktree or clone at `origin/main` (root `README.md` → "Run it"). Never `git pull` in `/Users/claude/work/paperclip-plugins-repo` to get the script: until every plugin runs from a release copy, a pull there reloads the live plugins.
+
 **Then, on a first install:**
 
 1. Open http://127.0.0.1:3100 → company settings → instance → **Plugin Manager** (`/company/settings/instance/plugins`).

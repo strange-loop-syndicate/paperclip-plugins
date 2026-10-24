@@ -23,16 +23,20 @@ Strange Loop Syndicate plugins for Paperclip. One folder per plugin.
 Needs Node 24+ and a board credential. Agent API keys get `403 Board access required`.
 
 ```sh
-cd /Users/claude/work/paperclip-plugins-repo
+git -C /Users/claude/work/paperclip-plugins-repo fetch origin
+git -C /Users/claude/work/paperclip-plugins-repo worktree add --detach /Users/claude/work/workspace/.worktrees/paperclip-plugins-release origin/main
+cd /Users/claude/work/workspace/.worktrees/paperclip-plugins-release
 node scripts/release-install.mjs memos-memory --dry-run   # build the copy, print the plan
 node scripts/release-install.mjs memos-memory             # switch to the tip of origin/main
 node scripts/release-install.mjs memos-memory 1b0189a     # or to a given merged commit
 ```
 
+- **✋ First switch (Paperclip task SLS-143):** run the script from a fresh worktree or clone at `origin/main`, as above. Never `git pull` in `/Users/claude/work/paperclip-plugins-repo` for it: that checkout has no `scripts/` yet, and a pull reloads all four live plugins and drops their subscriptions. `git fetch` and `git worktree add` write only under `.git/`, which Paperclip does not watch. After all four plugins run from release copies, any checkout is safe.
 - **Source:** a commit on `origin/main`, default its tip. The script runs `git fetch` and refuses a sha that is not on `origin/main`. It never reads the working tree, so any checkout of this repo works.
 - **Release copy:** `git archive` of `<sha>:<plugin>`, then `npm ci` and the plugin's checks (`npm run check`, or `typecheck`, `build` and `test` where there is no `check`). It builds in a `.tmp-*` folder, makes it read-only, then renames it into place. An existing complete copy (with `.release.json`) is reused. The build log is `.release-build.log` in the copy.
 - **Switch:** soft uninstall (`DELETE /api/plugins/<id>`, no purge), then `POST /api/plugins/install` with the release path. `install` answers 409 for a plugin that is still installed. The soft uninstall keeps the plugin row, so the ID, config and plugin state stay. `install` then runs `lifecycle.load` → `activateReadyPlugin`, the same full activation that `enable` runs.
-- **Checks:** before, it records ID, key, version, status, packagePath and each company's config. After, it checks status `ready`, the same ID and key, the manifest version of that sha, packagePath = the release copy, and unchanged config. Any mismatch exits 1. If `install` fails, it reinstalls from the previous packagePath.
+- **Checks:** before, it records ID, key, version, status, packagePath and each company's config. After, it checks status `ready`, the same ID and key, the manifest version of that sha, packagePath = the release copy, and unchanged config. Any mismatch exits 1.
+- **Rollback:** if `install` fails, the script reinstalls from the previous packagePath. `install` can fail after it has set the row to `ready` at the new path (the worker does not start). The script then soft-uninstalls again before it reinstalls, and checks that the plugin is `ready` at the previous path.
 - **Records:** `before.json` and `after.json` in `/Users/claude/work/paperclip-plugins-releases/_installs/<plugin>/<time>/`.
 - **Undo:** the script prints the previous packagePath. To go back to an older release, run the script with that release's sha. The release folder is reused.
 - **Credential:** `$PAPERCLIP_BOARD_TOKEN`, else the `paperclipai` CLI board login for that API base (`$PAPERCLIP_AUTH_STORE`, else `$PAPERCLIP_HOME/auth.json`, else `~/.paperclip/auth.json`). The token is never printed. `--api-base` defaults to `$PAPERCLIP_API_URL` or `http://127.0.0.1:3100`.

@@ -22,7 +22,7 @@ This package has two parts. They work independently.
 
 ## 1. Install the plugin
 
-1. Install or update it only through the release script, from a merged commit: `node scripts/release-install.mjs memos-memory` (add `--allow-new` on a first install). See the root [`README.md`](../README.md) → "Install and update". The script installs from a read-only release copy. Never install from a checkout: a write there hot-reloads the worker and drops its event subscriptions, so capture stops with no error. The manifest is `src/manifest.js`, the worker `src/worker.js`, the UI `ui/index.js`.
+1. Install or update it only through the release script, from a merged commit: `node scripts/release-install.mjs memos-memory` (add `--allow-new` on a first install). Run it from a fresh worktree or clone at `origin/main` (root `README.md` → "Run it"). Never `git pull` in `/Users/claude/work/paperclip-plugins-repo` to get the script: until every plugin runs from a release copy, a pull there reloads the live plugins. See the root [`README.md`](../README.md) → "Install and update". The script installs from a read-only release copy. Never install from a checkout: a write there hot-reloads the worker and drops its event subscriptions, so capture stops with no error. The manifest is `src/manifest.js`, the worker `src/worker.js`, the UI `ui/index.js`.
    - **Check after an update:** post a test comment on a task in a captured project. Within about 1 minute, the `shadow-log` route has an entry with that `commentId`.
    - **The recall wrapper is separate.** The adapter `command` path (sections 2 and 3) is not a plugin install, and Paperclip does not watch it.
 2. Bind the OpenRouter key to the plugin in each company that uses it:

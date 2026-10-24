@@ -321,6 +321,34 @@ function writeRecord(dir, name, data) {
   fs.writeFileSync(path.join(dir, name), `${JSON.stringify(data, null, 2)}\n`);
 }
 
+// /install can fail after lifecycle.load has already set the row to `ready` at the new
+// path (the worker then fails to start). /install answers 409 for that row, so uninstall
+// it again first. Never throws: the caller rethrows the original install error.
+async function rollback(api, before) {
+  try {
+    let current = null;
+    try {
+      current = await api("GET", `/api/plugins/${before.id}`);
+    } catch (err) {
+      if (err.status !== 404) throw err;
+    }
+    if (current && current.status !== "uninstalled") {
+      log(`rollback: plugin is '${current.status}' at ${current.packagePath}; DELETE /api/plugins/${before.id} (soft uninstall)`);
+      await api("DELETE", `/api/plugins/${before.id}`);
+    }
+    log(`rollback: POST /api/plugins/install ${before.packagePath}`);
+    await api("POST", "/api/plugins/install", { packageName: before.packagePath, isLocalPath: true });
+    const restored = await api("GET", `/api/plugins/${before.id}`);
+    if (restored.status === "ready" && samePath(restored.packagePath, before.packagePath)) {
+      log(`rollback: done; ${restored.pluginKey} is ready at ${restored.packagePath}. Run its event check.`);
+    } else {
+      log(`rollback failed: plugin is '${restored.status}' at ${restored.packagePath}; fix it by hand`);
+    }
+  } catch (err) {
+    log(`rollback failed: ${err.message}; fix it by hand`);
+  }
+}
+
 async function install(opts, release) {
   const { releaseDir, marker } = release;
   const installPath = fs.realpathSync(releaseDir);
@@ -366,13 +394,7 @@ async function install(opts, release) {
     } catch (err) {
       if (before?.packagePath) {
         log(`install failed: ${err.message}`);
-        log(`rollback: POST /api/plugins/install ${before.packagePath}`);
-        try {
-          await api("POST", "/api/plugins/install", { packageName: before.packagePath, isLocalPath: true });
-          log("rollback: done; check the plugin by hand");
-        } catch (rollbackErr) {
-          log(`rollback failed: ${rollbackErr.message}`);
-        }
+        await rollback(api, before);
       }
       throw err;
     }

@@ -73,6 +73,9 @@ async function readManifest(dir) {
 function freshStub() {
   return {
     mode: "ok",
+    // absent: Paperclip has no row for this key (never installed). An uninstalled row
+    // still answers GET, as on the real server (resolvePlugin -> registry.getById).
+    absent: false,
     requests: [],
     plugin: { id: "plugin-uuid", pluginKey: "test.fake-plugin", version: "0.9.0", status: "ready", packagePath: OLD_PATH },
     configs: { [COMPANY]: { id: "cfg-1", pluginId: "plugin-uuid", companyId: COMPANY, configJson: { apiKey: { type: "secret_ref", secretId: "s1" } } } },
@@ -97,14 +100,18 @@ async function handle(req, res) {
     if (p.status !== "uninstalled") return json(res, 409, { error: `Plugin already installed: ${p.pluginKey}` });
     if (stub.mode === "install-fails" && packageName !== OLD_PATH) return json(res, 400, { error: "bad manifest" });
     const manifest = packageName === OLD_PATH ? { version: "0.9.0" } : await readManifest(packageName);
+    stub.absent = false;
     Object.assign(p, { status: "ready", packagePath: packageName, version: stub.mode === "wrong-version" ? "9.9.9" : manifest.version });
+    // lifecycle.load sets the row ready, then activateReadyPlugin fails to start the worker.
+    if (stub.mode === "activate-fails" && packageName !== OLD_PATH) return json(res, 400, { error: "worker failed to start" });
     if (stub.mode === "drop-config") stub.configs[COMPANY] = null;
     return json(res, 200, p);
   }
-  if (m && (m[1] === p.id || m[1] === p.pluginKey)) {
+  if (m && !stub.absent && (m[1] === p.id || m[1] === p.pluginKey)) {
     if (req.method === "GET" && m[2]) return json(res, 200, stub.configs[url.searchParams.get("companyId")] ?? null);
-    if (req.method === "GET") return p.status === "uninstalled" ? json(res, 404, { error: "Plugin not found" }) : json(res, 200, p);
+    if (req.method === "GET") return json(res, 200, p);
     if (req.method === "DELETE") {
+      if (p.status === "uninstalled") return json(res, 400, { error: `Plugin ${p.pluginKey} is already uninstalled` });
       p.status = "uninstalled";
       return json(res, 200, p);
     }
@@ -264,8 +271,25 @@ test("failed install rolls back to the previous folder", async () => {
   assert.equal(code, 1, out);
   const installs = stub.requests.filter((r) => r.method === "POST").map((r) => r.body.packageName);
   assert.deepEqual(installs, [releaseDir(shas.v11), OLD_PATH]);
+  assert.deepEqual(mutations(), ["DELETE /api/plugins/plugin-uuid", "POST /api/plugins/install", "POST /api/plugins/install"]);
   assert.match(out, /rollback: done/);
   assert.deepEqual([stub.plugin.status, stub.plugin.packagePath], ["ready", OLD_PATH]);
+});
+
+test("worker fails after the row is set ready: rollback uninstalls again, then restores the old folder", async () => {
+  stub.mode = "activate-fails";
+  const { code, out } = await runScript(["fake-plugin"]);
+  assert.equal(code, 1, out);
+  assert.deepEqual(mutations(), [
+    "DELETE /api/plugins/plugin-uuid",
+    "POST /api/plugins/install",
+    "DELETE /api/plugins/plugin-uuid",
+    "POST /api/plugins/install",
+  ]);
+  assert.match(out, /worker failed to start/);
+  assert.match(out, /rollback: plugin is 'ready' at .*; DELETE/);
+  assert.match(out, /rollback: done/);
+  assert.deepEqual([stub.plugin.id, stub.plugin.status, stub.plugin.packagePath], ["plugin-uuid", "ready", OLD_PATH]);
 });
 
 test("plugin not ready: refuses before any change", async () => {
@@ -277,6 +301,7 @@ test("plugin not ready: refuses before any change", async () => {
 });
 
 test("unknown plugin key needs --allow-new", async () => {
+  Object.assign(stub, { absent: true });
   stub.plugin.status = "uninstalled";
   const refused = await runScript(["fake-plugin"]);
   assert.equal(refused.code, 1, refused.out);

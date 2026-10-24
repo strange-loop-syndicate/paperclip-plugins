@@ -86,6 +86,8 @@ Install needs an instance admin (board) credential. Agent API keys get `403 Boar
    node scripts/release-install.mjs linear-intake --allow-new  # first install
    ```
 
+   Run it from a fresh worktree or clone at `origin/main` (root `README.md` → "Run it"). Never `git pull` in `/Users/claude/work/paperclip-plugins-repo` to get the script: until every plugin runs from a release copy, a pull there reloads the live plugins.
+
 2. **Approve** the capabilities in Plugin Manager (`/company/settings/instance/plugins`) → **Review**, if the plugin is not `ready`.
 3. **Secret:** add the Linear API key as a company secret.
 4. **Configure** the plugin in that company: pick the secret in `linearApiKey` and save. The other fields keep their defaults unless a name differs. Saving delivers the config to the worker; the next 2-minute tick starts intake.

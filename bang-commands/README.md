@@ -81,6 +81,8 @@ Board action. Only through the release script, from a merged commit (see the roo
 node scripts/release-install.mjs bang-commands
 ```
 
+Run it from a fresh worktree or clone at `origin/main` (root `README.md` → "Run it"). Never `git pull` in `/Users/claude/work/paperclip-plugins-repo` to get the script: until every plugin runs from a release copy, a pull there reloads the live plugins.
+
 Never install from a checkout: a build or `git pull` there hot-reloads the worker and
 drops its `issue.comment.created` subscription.
 
