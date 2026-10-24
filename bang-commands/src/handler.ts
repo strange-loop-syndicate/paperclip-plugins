@@ -6,6 +6,7 @@ export const MAX_OUTPUT_CHARS = 6_000;
 
 export type Parsed =
   | { kind: "none" }
+  | { kind: "image" }
   | { kind: "help" }
   | { kind: "run"; command: BangCommand };
 
@@ -13,6 +14,7 @@ const NAME = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 
 /**
  * A comment triggers when its trimmed body starts with `!`.
+ * - `![…` (a markdown image, such as a pasted screenshot) → image: runs nothing.
  * - `!help` → list of shortcuts.
  * - `!<name>` alone, matching a shortcut → that shortcut.
  * - anything else → the text after `!` runs in a shell (may be multi-line).
@@ -22,6 +24,7 @@ export function parseComment(body: string, commands: BangCommand[]): Parsed {
   if (!text.startsWith("!")) return { kind: "none" };
   const rest = text.slice(1).trim();
   if (!rest) return { kind: "none" };
+  if (rest.startsWith("[")) return { kind: "image" };
   if (rest.toLowerCase() === "help") return { kind: "help" };
   if (NAME.test(rest)) {
     const command = commands.find((c) => c.name === rest.toLowerCase());
