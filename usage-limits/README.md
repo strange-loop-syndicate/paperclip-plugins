@@ -57,8 +57,10 @@ The plugin keeps no credentials and calls no provider API itself.
 
 Needs Node 24+.
 
+The live install loads from the `paperclip-plugins` checkout at `/Users/claude/work/paperclip-plugins-repo`. The older `/Users/claude/work/paperclip-plugins/` folder is not this repo.
+
 ```sh
-cd /Users/claude/work/workspace/paperclip-limits-plugin
+cd /Users/claude/work/paperclip-plugins-repo/usage-limits
 npm ci
 npm run check     # typecheck + tests + build + manifest validation
 npm run preview   # rows beside the host's nav items, host CSS, alignment check -> evidence/preview-v4.html
@@ -75,9 +77,9 @@ The Plugin Manager's **Install Plugin** dialog takes npm names only. A local fol
 **CLI** (uses the stored board login for that API base; add `--api-key <board token>` if there is none):
 
 ```sh
-cd /Users/claude/work/workspace/paperclip-limits-plugin && npm ci && npm run check
+cd /Users/claude/work/paperclip-plugins-repo/usage-limits && npm ci && npm run check
 cd /Users/claude/work/paperclip/app
-npx paperclipai plugin install --local /Users/claude/work/workspace/paperclip-limits-plugin --api-base http://127.0.0.1:3100
+npx paperclipai plugin install --local /Users/claude/work/paperclip-plugins-repo/usage-limits --api-base http://127.0.0.1:3100
 ```
 
 **API** (same request the CLI sends, from a board session):
@@ -86,7 +88,7 @@ npx paperclipai plugin install --local /Users/claude/work/workspace/paperclip-li
 POST /api/plugins/install
 Content-Type: application/json
 
-{ "packageName": "/Users/claude/work/workspace/paperclip-limits-plugin", "isLocalPath": true }
+{ "packageName": "/Users/claude/work/paperclip-plugins-repo/usage-limits", "isLocalPath": true }
 ```
 
 **Then:**

@@ -71,11 +71,13 @@ npm test        # unit tests, harness-based
 npm run build   # dist/worker.js + dist/manifest.js
 ```
 
-Install (board action, run by the owner):
+Install (board action, run by the owner) from the `paperclip-plugins` checkout at
+`/Users/claude/work/paperclip-plugins-repo`. The older `/Users/claude/work/paperclip-plugins/`
+folder holds the pre-move checkout and is not this repo.
 
 ```sh
 cd /Users/claude/work/paperclip/app
-./node_modules/.bin/paperclipai plugin install --local /Users/claude/work/paperclip-plugins/paperclip-plugin-bang-commands
+./node_modules/.bin/paperclipai plugin install --local /Users/claude/work/paperclip-plugins-repo/bang-commands
 ```
 
 Local-path installs are watched: after `npm run build` the host restarts the worker.
