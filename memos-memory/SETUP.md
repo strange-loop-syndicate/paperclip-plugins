@@ -23,14 +23,22 @@ This package has two parts. They work independently.
 ## 1. Install the plugin
 
 1. Install it as a local-path plugin from the `memos-memory/` folder of a `paperclip-plugins` checkout (`https://github.com/strange-loop-syndicate/paperclip-plugins`), for example `/Users/claude/work/workspace/paperclip-plugins/memos-memory`. The manifest is `src/manifest.js`, the worker `src/worker.js`, the UI `ui/index.js`. Local-path installs are a development workflow. For a deployed setup, publish the package to npm and install it from there.
-2. Store the OpenRouter key as a Paperclip secret in each company that uses the plugin, and put its reference in `openrouterApiKeyRef`.
+2. Bind the OpenRouter key to the plugin in each company that uses it:
+   1. In the company's plugin settings, find the **OpenRouter API key** field (`openrouterApiKeyRef`). It is a secret picker, not a text box.
+   2. Pick the company secret that holds the key, or use **Create & bind** to make one. Leave the version at `latest` unless you must pin one.
+   3. Save. The form stores `{ "type": "secret_ref", "secretId": "<uuid>" }` in `openrouterApiKeyRef`, and Paperclip binds that secret to this plugin at that config path. The plugin can resolve only a bound secret.
+   4. Through the API instead: `POST /api/plugins/:id/config` with `companyId` and `configJson.openrouterApiKeyRef` set to that object. The binding is made on the same save. A plain string, also a bare secret UUID, does not work: the config save or the resolve refuses it.
+   5. Check: the next agent comment in a captured project gives a `shadow` entry in the `shadow-log` route. If the key does not resolve, the worker log says `openrouter api key secret could not be resolved` or `is not a secret binding`.
+   6. A MemOS bearer token, if MemOS needs one, uses `memosApiKeyRef` the same way.
+
+   The worker keeps a resolved key in memory for 10 minutes, and retries a failed resolve after 1 minute. The host allows 30 resolves a minute per company. A config save clears that company's keys at once, so a rotated key takes effect on save.
 3. Set the plugin config:
 
 | Key | Default | Meaning |
 |---|---|---|
 | `memosBaseUrl` | — | MemOS base URL, for example `http://127.0.0.1:8001`. If it is empty, the plugin does nothing |
-| `memosApiKeyRef` | — | Optional Paperclip secret reference for a MemOS bearer token |
-| `openrouterApiKeyRef` | — | Paperclip secret reference for the OpenRouter key. Capture is off without it |
+| `memosApiKeyRef` | — | Optional secret binding (`{ type: "secret_ref", secretId }`) for a MemOS bearer token |
+| `openrouterApiKeyRef` | — | Secret binding (`{ type: "secret_ref", secretId }`) for the OpenRouter key. Capture is off without it. See step 2 |
 | `captureMode` | `shadow` | `shadow` logs Jev verdicts and extracted memories and saves nothing. `save` stores the memories. Switching to `save` is a board decision |
 | `saveP` | `0.7` | Jev probability a content question must reach for an item to pass |
 | `routineP` | `0.5` | An item whose "routine status only" probability reaches this is skipped |

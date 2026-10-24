@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { after, before, beforeEach, describe, it } from "node:test";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import manifest from "../src/manifest.js";
-import { createMemoryPlugin, RETRY_JOB_KEY } from "../src/plugin.js";
+import { createMemoryPlugin, RETRY_JOB_KEY, SECRET_RETRY_MS, SECRET_TTL_MS } from "../src/plugin.js";
+import { fakeHostSecrets, RATE_LIMIT, secretRef } from "./helpers/fake-secrets.js";
 import { deadUrl, seedMemory, startFakeServer } from "./helpers/fake-servers.js";
 
 const A = "company-a";
@@ -42,13 +43,19 @@ function clock(start = Date.parse("2026-10-24T10:00:00Z")) {
   return now;
 }
 
-async function setup(server, config = {}, seed = {}, { now } = {}) {
+const OR_SECRET = "0b8f3d4e-6a1c-4f2b-9c7d-1e2f3a4b5c6d";
+const MEMOS_SECRET = "7c9e1a2b-3d4f-4a5b-8c6d-9e0f1a2b3c4d";
+const OR_KEY = "sk-or-test-key";
+const boundSecrets = (now) =>
+  fakeHostSecrets({ now, bindings: [{ companyId: A, secretId: OR_SECRET, configPath: "openrouterApiKeyRef" }], values: { [OR_SECRET]: OR_KEY } });
+
+async function setup(server, config = {}, seed = {}, { now, secrets = boundSecrets(now) } = {}) {
   const harness = createTestHarness({
     manifest,
     config: {
       memosBaseUrl: server.url,
       openrouterBaseUrl: server.url,
-      openrouterApiKeyRef: "openrouter-key",
+      openrouterApiKeyRef: secretRef(OR_SECRET),
       captureMode: "save",
       recallTimeoutMs: 500,
       captureTimeoutMs: 500,
@@ -58,6 +65,9 @@ async function setup(server, config = {}, seed = {}, { now } = {}) {
     },
   });
   harness.seed({ issues: [issue()], issueComments: [comment()], projects: [project("p1", "Memory"), project("p2", "Ops")], ...seed });
+  // The SDK harness resolves any string; the real host does not.
+  harness.ctx.secrets = secrets;
+  harness.secrets = secrets;
   const plugin = createMemoryPlugin({ now, sleep: async () => {} });
   await plugin.definition.setup(harness.ctx);
   harness.plugin = plugin;
@@ -236,6 +246,144 @@ describe("capture: Jev gate and extraction", () => {
     await h.emit("agent.run.finished", { runId: "run-1", agentId: "agent-1", issueId: "iss-1" }, { companyId: A, actorType: "agent" });
     assert.equal(jevCalls(server).length, 0);
     assert.equal(adds(server).length, 0);
+  });
+});
+
+describe("secrets: the host's secret_ref contract", () => {
+  let server;
+  before(async () => (server = await startFakeServer()));
+  after(() => server.close());
+  beforeEach(() => resetServer(server));
+
+  const comments = (n) => Array.from({ length: n }, (_, i) => comment({ id: `c-${i}` }));
+  const emitComment = (h, i, companyId = A) => h.emit("issue.comment.created", ...commentEvent({ eventId: `evt-${companyId}-${i}-${Math.random()}`, companyId }, { commentId: `c-${i}` }));
+
+  it("the fake host refuses what the real one refuses", async () => {
+    const s = boundSecrets();
+    await assert.rejects(s.resolve("openrouter-key", { companyId: A }), /Invalid secret reference/);
+    await assert.rejects(s.resolve(OR_SECRET, { companyId: A }), /Invalid secret reference/);
+    await assert.rejects(s.resolve(secretRef(OR_SECRET)), /companyId is required/);
+    await assert.rejects(s.resolve(secretRef(OR_SECRET), { companyId: B }), /not bound/);
+    await assert.rejects(s.resolve(secretRef(OR_SECRET), { companyId: A, configPath: "memosApiKeyRef" }), /not bound/);
+    assert.equal(await s.resolve(secretRef(OR_SECRET), { companyId: A, configPath: "openrouterApiKeyRef" }), OR_KEY);
+  });
+
+  it("both key fields are secret pickers in the settings form", () => {
+    for (const field of ["openrouterApiKeyRef", "memosApiKeyRef"]) {
+      assert.equal(manifest.instanceConfigSchema.properties[field].format, "secret-ref");
+      assert.equal(manifest.instanceConfigSchema.properties[field].type, "object");
+    }
+  });
+
+  it("resolves the binding with the company and config path, and Jev gets the key", async () => {
+    const h = await setup(server);
+    await h.emit("issue.comment.created", ...commentEvent());
+    assert.deepEqual(h.secrets.calls.map((c) => [c.ref, c.options]), [[secretRef(OR_SECRET), { companyId: A, configPath: "openrouterApiKeyRef" }]]);
+    assert.equal(jevCalls(server)[0].headers.authorization, `Bearer ${OR_KEY}`);
+    assert.equal(extractCalls(server)[0].headers.authorization, `Bearer ${OR_KEY}`);
+    assert.equal(adds(server).length, 1);
+  });
+
+  it("a bound MemOS token reaches MemOS as a bearer token", async () => {
+    const secrets = fakeHostSecrets({
+      bindings: [
+        { companyId: A, secretId: OR_SECRET, configPath: "openrouterApiKeyRef" },
+        { companyId: A, secretId: MEMOS_SECRET, configPath: "memosApiKeyRef" },
+      ],
+      values: { [OR_SECRET]: OR_KEY, [MEMOS_SECRET]: "memos-token" },
+    });
+    const h = await setup(server, { memosApiKeyRef: secretRef(MEMOS_SECRET) }, {}, { secrets });
+    await h.emit("issue.comment.created", ...commentEvent());
+    assert.equal(adds(server)[0].headers.authorization, "Bearer memos-token");
+  });
+
+  it("a plain string ref captures nothing and says how to fix it", async () => {
+    const h = await setup(server, { openrouterApiKeyRef: "openrouter-key" });
+    await h.emit("issue.comment.created", ...commentEvent());
+    assert.equal(jevCalls(server).length, 0);
+    assert.equal(adds(server).length, 0);
+    assert.ok(h.logs.some((l) => /not a secret binding/.test(l.message)));
+  });
+
+  it("a secret bound in another company is never resolved for this one", async () => {
+    const h = await setup(server, {}, { issues: [issue({ companyId: B })], issueComments: [comment({ companyId: B })], projects: [project("p1", "Memory", B)] });
+    await h.emit("issue.comment.created", ...commentEvent({ companyId: B }));
+    assert.equal(h.secrets.calls[0].options.companyId, B);
+    assert.equal(jevCalls(server).length, 0);
+  });
+
+  it("caches the key: 40 events in a minute make one resolve and stay under the host limit", async () => {
+    const now = clock();
+    const h = await setup(server, {}, { issueComments: comments(40) }, { now });
+    for (let i = 0; i < 40; i++) await emitComment(h, i);
+    assert.equal(h.secrets.calls.length, 1);
+    assert.ok(40 > RATE_LIMIT);
+    assert.equal(jevCalls(server).length, 40);
+    assert.ok(!h.logs.some((l) => /could not be resolved/.test(l.message)));
+  });
+
+  it("concurrent events share one in-flight resolve", async () => {
+    const h = await setup(server, {}, { issueComments: comments(5) });
+    await Promise.all([0, 1, 2, 3, 4].map((i) => emitComment(h, i)));
+    assert.equal(h.secrets.calls.length, 1);
+    assert.equal(jevCalls(server).length, 5);
+  });
+
+  it("the cache is per company", async () => {
+    const secrets = fakeHostSecrets({
+      bindings: [
+        { companyId: A, secretId: OR_SECRET, configPath: "openrouterApiKeyRef" },
+        { companyId: B, secretId: OR_SECRET, configPath: "openrouterApiKeyRef" },
+      ],
+      values: { [OR_SECRET]: OR_KEY },
+    });
+    const h = await setup(server, {}, { issueComments: [comment(), comment({ id: "c-b", companyId: B })] }, { secrets });
+    await h.emit("issue.comment.created", ...commentEvent());
+    await h.emit("issue.comment.created", ...commentEvent({ companyId: B, eventId: "evt-b" }, { commentId: "c-b" }));
+    assert.deepEqual(secrets.calls.map((c) => c.options.companyId), [A, B]);
+  });
+
+  it("a config save drops that company's cached key, so a rotated key is used", async () => {
+    const h = await setup(server, {}, { issueComments: comments(3) });
+    await emitComment(h, 0);
+    h.secrets.values[OR_SECRET] = "sk-or-rotated";
+    await h.plugin.definition.onConfigChanged({}, { companyId: B });
+    await emitComment(h, 1);
+    assert.equal(h.secrets.calls.length, 1, "another company's save keeps this cache");
+    assert.equal(jevCalls(server).at(-1).headers.authorization, `Bearer ${OR_KEY}`);
+    await h.plugin.definition.onConfigChanged({}, { companyId: A });
+    await emitComment(h, 2);
+    assert.equal(h.secrets.calls.length, 2);
+    assert.equal(jevCalls(server).at(-1).headers.authorization, "Bearer sk-or-rotated");
+  });
+
+  it("the cached key expires after the TTL", async () => {
+    const now = clock();
+    const h = await setup(server, {}, { issueComments: comments(2) }, { now });
+    await emitComment(h, 0);
+    now.advance(SECRET_TTL_MS + 1);
+    await emitComment(h, 1);
+    assert.equal(h.secrets.calls.length, 2);
+  });
+
+  it("a failed resolve is retried after a minute, not on every event", async () => {
+    const now = clock();
+    const secrets = fakeHostSecrets({ now, bindings: [], values: { [OR_SECRET]: OR_KEY } });
+    const h = await setup(server, {}, { issueComments: comments(3) }, { now, secrets });
+    await emitComment(h, 0);
+    await emitComment(h, 1);
+    assert.equal(secrets.calls.length, 1);
+    assert.equal(jevCalls(server).length, 0);
+    assert.ok(h.logs.some((l) => /could not be resolved/.test(l.message)));
+    secrets.bindings.push({ companyId: A, secretId: OR_SECRET, configPath: "openrouterApiKeyRef" });
+    now.advance(SECRET_RETRY_MS + 1);
+    await emitComment(h, 2);
+    assert.equal(secrets.calls.length, 2);
+    assert.equal(jevCalls(server).length, 1);
+  });
+
+  it("serves several companies from one worker", () => {
+    assert.equal(createMemoryPlugin().definition.multiCompanyConfig, true);
   });
 });
 
