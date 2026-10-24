@@ -54,20 +54,19 @@ function graphqlErrorText(errors: unknown): string {
     .join("; ");
 }
 
-export async function fetchIntakeIssues(
+/** POST one GraphQL query; returns `data` or throws LinearError with a readable reason. */
+async function linearQuery(
   fetchImpl: Fetch,
   apiKey: string,
-  input: { teamKeys: string[]; userId: string; field: AssignmentField },
-): Promise<LinearIssuePage> {
+  query: string,
+  variables: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
   let response: Response;
   try {
     response = await fetchImpl(LINEAR_GRAPHQL_URL, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: apiKey },
-      body: JSON.stringify({
-        query: buildIntakeQuery(input.field),
-        variables: { teamKeys: input.teamKeys, userId: input.userId },
-      }),
+      body: JSON.stringify({ query, variables }),
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
   } catch (err) {
@@ -78,15 +77,27 @@ export async function fetchIntakeIssues(
   if (!response.ok) {
     throw new LinearError(`Linear HTTP ${response.status}: ${text.slice(0, 300)}`);
   }
-  let payload: { data?: { issues?: { nodes?: unknown; pageInfo?: { hasNextPage?: unknown } } }; errors?: unknown };
+  let payload: { data?: Record<string, unknown>; errors?: unknown };
   try {
     payload = JSON.parse(text);
   } catch {
     throw new LinearError(`Linear returned non-JSON: ${text.slice(0, 300)}`);
   }
   if (payload.errors) throw new LinearError(`Linear GraphQL error: ${graphqlErrorText(payload.errors)}`);
+  return payload.data ?? {};
+}
 
-  const nodes = payload.data?.issues?.nodes;
+export async function fetchIntakeIssues(
+  fetchImpl: Fetch,
+  apiKey: string,
+  input: { teamKeys: string[]; userId: string; field: AssignmentField },
+): Promise<LinearIssuePage> {
+  const data = await linearQuery(fetchImpl, apiKey, buildIntakeQuery(input.field), {
+    teamKeys: input.teamKeys,
+    userId: input.userId,
+  });
+  const result = data.issues as { nodes?: unknown; pageInfo?: { hasNextPage?: unknown } } | undefined;
+  const nodes = result?.nodes;
   if (!Array.isArray(nodes)) throw new LinearError("Linear response has no issues.nodes");
   const issues: LinearIssue[] = [];
   for (const node of nodes) {
@@ -100,5 +111,42 @@ export async function fetchIntakeIssues(
       project: p && typeof p.id === "string" ? { id: p.id, name: typeof p.name === "string" ? p.name : "" } : null,
     });
   }
-  return { issues, hasNextPage: payload.data?.issues?.pageInfo?.hasNextPage === true };
+  return { issues, hasNextPage: result?.pageInfo?.hasNextPage === true };
+}
+
+export interface LinearUser {
+  id: string;
+  name: string;
+  displayName: string;
+  email: string;
+}
+
+/** Read-only query: active users whose name, display name or email equals `name`, ignoring case. */
+export const USER_LOOKUP_QUERY = `query LinearIntakeUser($name: String!) {
+  users(
+    first: 50
+    filter: {
+      or: [
+        { name: { eqIgnoreCase: $name } }
+        { displayName: { eqIgnoreCase: $name } }
+        { email: { eqIgnoreCase: $name } }
+      ]
+    }
+  ) {
+    nodes { id name displayName email }
+  }
+}`;
+
+export async function fetchUsersByName(fetchImpl: Fetch, apiKey: string, name: string): Promise<LinearUser[]> {
+  const data = await linearQuery(fetchImpl, apiKey, USER_LOOKUP_QUERY, { name });
+  const nodes = (data.users as { nodes?: unknown } | undefined)?.nodes;
+  if (!Array.isArray(nodes)) throw new LinearError("Linear response has no users.nodes");
+  const users: LinearUser[] = [];
+  for (const node of nodes) {
+    const n = (node ?? {}) as Record<string, unknown>;
+    if (typeof n.id !== "string") continue;
+    const str = (v: unknown) => (typeof v === "string" ? v : "");
+    users.push({ id: n.id, name: str(n.name), displayName: str(n.displayName), email: str(n.email) });
+  }
+  return users;
 }
