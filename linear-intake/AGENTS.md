@@ -1,7 +1,7 @@
 # linear-intake — agent rules
 
 - **What:** Paperclip plugin that turns Linear issues delegated to the agent user (state Todo) into `[KEY] …` tasks for the Project Lead, every 2 minutes. See `README.md`.
-- **Language:** TypeScript, bundled by `build.mjs` (`npm run build` → `dist/`). The live install loads `dist/`, so rebuild after every source change. Node 24+.
+- **Language:** TypeScript, bundled by `build.mjs` (`npm run build` → `dist/`). `dist/` is not committed. The live install loads it from a release copy that `scripts/release-install.mjs` builds (root `README.md`). Node 24+.
 - **Tests:** `npm run check` (typecheck, `node --test`, build, manifest validation). Every behaviour change needs a test.
 - **Invariants:**
   - No writes to Linear. The Project Lead owns them.

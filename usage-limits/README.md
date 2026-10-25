@@ -57,10 +57,9 @@ The plugin keeps no credentials and calls no provider API itself.
 
 Needs Node 24+.
 
-The live install loads from the `paperclip-plugins` checkout at `/Users/claude/work/paperclip-plugins-repo`. The older `/Users/claude/work/paperclip-plugins/` folder is not this repo.
+In a worktree of this repo, not in a folder Paperclip loads:
 
 ```sh
-cd /Users/claude/work/paperclip-plugins-repo/usage-limits
 npm ci
 npm run check     # typecheck + tests + build + manifest validation
 npm run preview   # rows beside the host's nav items, host CSS, alignment check -> evidence/preview-v4.html
@@ -72,29 +71,19 @@ npm run preview   # rows beside the host's nav items, host CSS, alignment check 
 
 Install needs an instance admin (board) credential. Agent API keys get `403 Board access required`.
 
-The Plugin Manager's **Install Plugin** dialog takes npm names only. A local folder outside the Paperclip checkout installs through the CLI or the API.
-
-**CLI** (uses the stored board login for that API base; add `--api-key <board token>` if there is none):
+Install or update only through the release script, from a merged commit (root [`README.md`](../README.md) → "Install and update"). It builds a read-only release copy and installs from it. Never install from a checkout, and never use the CLI or API install by hand.
 
 ```sh
-cd /Users/claude/work/paperclip-plugins-repo/usage-limits && npm ci && npm run check
-cd /Users/claude/work/paperclip/app
-npx paperclipai plugin install --local /Users/claude/work/paperclip-plugins-repo/usage-limits --api-base http://127.0.0.1:3100
+node scripts/release-install.mjs usage-limits              # update
+node scripts/release-install.mjs usage-limits --allow-new  # first install
 ```
 
-**API** (same request the CLI sends, from a board session):
+Run it from a fresh worktree or clone at `origin/main` (root `README.md` → "Run it"). Never `git pull` in `/Users/claude/work/paperclip-plugins-repo` to get the script: until every plugin runs from a release copy, a pull there reloads the live plugins.
 
-```http
-POST /api/plugins/install
-Content-Type: application/json
-
-{ "packageName": "/Users/claude/work/paperclip-plugins-repo/usage-limits", "isLocalPath": true }
-```
-
-**Then:**
+**Then, on a first install:**
 
 1. Open http://127.0.0.1:3100 → company settings → instance → **Plugin Manager** (`/company/settings/instance/plugins`).
 2. If the plugin is not `ready`, open **Review** and approve `agents.read` and `ui.sidebar.register`.
 3. Open any company. The usage rows show in the sidebar nav, after Projects.
 
-The host loads the built files in place. After a code change, run `npm run build` and reload or upgrade the plugin from the Plugin Manager.
+- **Check after an update:** reload any company page. The usage rows in the sidebar show values, not an error.
