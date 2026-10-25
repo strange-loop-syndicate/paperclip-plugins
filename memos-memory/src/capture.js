@@ -1,7 +1,7 @@
 // Capture pipeline for one item (a comment, or a run's result comment):
 // Jev decides whether it holds anything worth keeping, the extractor writes
-// it as a few short memories, and only those are stored. In shadow mode the
-// verdicts and memories are logged and nothing is stored.
+// it as a few short memories, and only those are stored. Every verdict is
+// logged. In shadow mode the log also holds the memories and nothing is stored.
 //
 // Items hold IDs only. When Jev or the extractor is down, the item waits in
 // plugin state and the retry job tries again, for up to 24 h. Tasks never wait.
@@ -101,19 +101,22 @@ export function createCapture({ now = () => Date.now() } = {}) {
     });
   }
 
-  // ---- shadow log (company scope, one key per UTC day) ----
+  // ---- verdict log (company scope, one key per UTC day, both modes) ----
 
   async function logVerdict(ctx, cfg, item, record) {
     const entry = { at: new Date(now()).toISOString(), mode: cfg.captureMode, key: item.key, source: item.source, ...record };
     ctx.logger.info("memory capture verdict", entry);
-    if (cfg.captureMode !== "shadow") return;
+    // In save mode the memories live in MemOS, where recall applies sharing.
+    // The log is open to every agent of the company, so it keeps their types only.
+    const { memories, ...rest } = entry;
+    const logged = cfg.captureMode === "shadow" || !memories ? entry : { ...rest, memoryTypes: memories.map((m) => m.type) };
     const day = entry.at.slice(0, 10);
     try {
       await withLock(`shadow:${item.companyId}:${day}`, async () => {
         const key = shadowKey(item.companyId, day);
         const log = (await ctx.state.get(key)) ?? [];
         if (log.length >= SHADOW_LOG_MAX_PER_DAY) return;
-        log.push(entry);
+        log.push(logged);
         await ctx.state.set(key, log);
       });
     } catch (err) {

@@ -465,6 +465,46 @@ describe("capture: shadow mode", () => {
   });
 });
 
+describe("capture: verdict log in save mode", () => {
+  let server;
+  before(async () => (server = await startFakeServer()));
+  after(() => server.close());
+  beforeEach(() => resetServer(server));
+
+  it("logs every verdict with memory types, not memory text", async () => {
+    const now = clock();
+    const seed = { issueComments: [comment(), comment({ id: "c-skip" }), comment({ id: "c-fail" })] };
+    const h = await setup(server, { captureMode: "save" }, seed, { now });
+    const emit = (commentId) => h.emit("issue.comment.created", ...commentEvent({ eventId: `evt-${commentId}` }, { commentId }));
+    await emit("c-1");
+    server.state.addMode = "empty";
+    server.state.llm.memories = [{ type: "lesson", text: "MemOS can answer an add with no created memory." }];
+    await emit("c-fail");
+    server.state.llm.answers = { decision: 0.1, lesson: 0.1, outcome: 0.1, fact: 0.1, routine: 0.9 };
+    await emit("c-skip");
+    assert.equal(adds(server).length, 2);
+    const res = await api(h, "shadow-log", { date: "2026-10-24" });
+    assert.deepEqual(
+      res.body.entries.map((e) => [e.commentId, e.mode, e.verdict, e.stored ?? null]),
+      [
+        ["c-1", "save", "pass", ["stored"]],
+        ["c-fail", "save", "pass", ["failed"]],
+        ["c-skip", "save", "skip", null],
+      ],
+    );
+    const [pass, fail] = res.body.entries;
+    assert.deepEqual(pass.memoryTypes, ["decision"]);
+    assert.deepEqual(fail.memoryTypes, ["lesson"]);
+    assert.equal(pass.memories, undefined);
+    assert.equal(pass.type, "decision");
+    assert.equal(pass.jevCostUsd, 0.0001);
+    assert.equal(pass.extractCostUsd, 0.0002);
+    assert.match(fail.error, /no created memory IDs/);
+    assert.doesNotMatch(JSON.stringify(res.body), /command wrapper|answer an add|Tests pass/, "the save-mode log holds no memory or comment text");
+    assert.equal(verdictLog(h).verdict, "skip", "the server log still gets every verdict");
+  });
+});
+
 // A long agent comment, shaped like the SLS-145 one that sat in `pending`:
 // headings, links, quoted titles and many facts.
 const LONG_BODY = [
