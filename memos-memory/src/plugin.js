@@ -91,13 +91,14 @@ export function createMemoryPlugin({ fetchImpl = (url, init) => globalThis.fetch
 
   async function loadConfig(ctx, companyId) {
     const raw = (await ctx.config.get(companyId)) ?? {};
-    const memosApiKey = await resolveSecret(ctx, companyId, "memosApiKeyRef", raw.memosApiKeyRef, "memos api key");
-    const openrouterKey = await resolveSecret(ctx, companyId, "openrouterApiKeyRef", raw.openrouterApiKeyRef, "openrouter api key");
+    // The settings page calls these fields "OpenAI key" and "OpenAI base URL";
+    // the config keys keep their v1 names. MemOS takes no key.
+    const llmKey = await resolveSecret(ctx, companyId, "openrouterApiKeyRef", raw.openrouterApiKeyRef, "OpenAI key (openrouterApiKeyRef)");
     const base = (typeof raw.openrouterBaseUrl === "string" && raw.openrouterBaseUrl.trim() ? raw.openrouterBaseUrl : OPENROUTER_BASE_URL).replace(/\/+$/, "");
     const captureProjectIds = Array.isArray(raw.captureProjectIds) ? raw.captureProjectIds.filter((p) => typeof p === "string" && p !== "") : [];
     return {
       companyId,
-      client: createMemosClient({ baseUrl: raw.memosBaseUrl, apiKey: memosApiKey, fetchImpl, logger: ctx.logger }),
+      client: createMemosClient({ baseUrl: raw.memosBaseUrl, fetchImpl, logger: ctx.logger }),
       recallTimeoutMs: num(raw.recallTimeoutMs, DEFAULT_RECALL_TIMEOUT_MS),
       captureTimeoutMs: num(raw.captureTimeoutMs, DEFAULT_CAPTURE_TIMEOUT_MS),
       topK: num(raw.topK, DEFAULT_TOP_K),
@@ -107,9 +108,9 @@ export function createMemoryPlugin({ fetchImpl = (url, init) => globalThis.fetch
       captureMode: raw.captureMode === "save" ? "save" : "shadow",
       saveP: prob(raw.saveP, DEFAULT_SAVE_P),
       routineP: prob(raw.routineP, DEFAULT_ROUTINE_P),
-      llmConfigured: Boolean(openrouterKey),
-      jev: createJevClient({ apiKey: openrouterKey, fetchImpl, sleep, now, model: raw.jevModel || JEV_MODEL, url: `${base}/systemone`, timeoutMs: num(raw.jevTimeoutMs, JEV_TIMEOUT_MS) }),
-      extractor: createExtractor({ apiKey: openrouterKey, fetchImpl, sleep, now, model: raw.extractModel || EXTRACT_MODEL, url: `${base}/chat/completions`, timeoutMs: num(raw.extractTimeoutMs, EXTRACT_TIMEOUT_MS) }),
+      llmConfigured: Boolean(llmKey),
+      jev: createJevClient({ apiKey: llmKey, fetchImpl, sleep, now, model: raw.jevModel || JEV_MODEL, url: `${base}/systemone`, timeoutMs: num(raw.jevTimeoutMs, JEV_TIMEOUT_MS) }),
+      extractor: createExtractor({ apiKey: llmKey, fetchImpl, sleep, now, model: raw.extractModel || EXTRACT_MODEL, url: `${base}/chat/completions`, timeoutMs: num(raw.extractTimeoutMs, EXTRACT_TIMEOUT_MS) }),
       // An empty `captureProjectIds` captures every project; a list captures only those.
       captureAllowed: (projectId) => captureProjectIds.length === 0 || captureProjectIds.includes(projectId ?? UNSCOPED_PROJECT),
     };

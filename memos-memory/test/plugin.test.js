@@ -270,15 +270,16 @@ describe("secrets: the host's secret_ref contract", () => {
     await assert.rejects(s.resolve(OR_SECRET, { companyId: A }), /Invalid secret reference/);
     await assert.rejects(s.resolve(secretRef(OR_SECRET)), /companyId is required/);
     await assert.rejects(s.resolve(secretRef(OR_SECRET), { companyId: B }), /not bound/);
-    await assert.rejects(s.resolve(secretRef(OR_SECRET), { companyId: A, configPath: "memosApiKeyRef" }), /not bound/);
+    await assert.rejects(s.resolve(secretRef(OR_SECRET), { companyId: A, configPath: "otherRef" }), /not bound/);
     assert.equal(await s.resolve(secretRef(OR_SECRET), { companyId: A, configPath: "openrouterApiKeyRef" }), OR_KEY);
   });
 
-  it("both key fields are secret pickers in the settings form", () => {
-    for (const field of ["openrouterApiKeyRef", "memosApiKeyRef"]) {
-      assert.equal(manifest.instanceConfigSchema.properties[field].format, "secret-ref");
-      assert.equal(manifest.instanceConfigSchema.properties[field].type, "object");
-    }
+  it("the OpenAI key field is a secret picker, and there is no MemOS key field", () => {
+    const props = manifest.instanceConfigSchema.properties;
+    assert.equal(props.openrouterApiKeyRef.format, "secret-ref");
+    assert.equal(props.openrouterApiKeyRef.type, "object");
+    assert.equal(props.memosApiKeyRef, undefined);
+    assert.deepEqual(Object.keys(props).filter((k) => props[k].format === "secret-ref"), ["openrouterApiKeyRef"]);
   });
 
   it("resolves the binding with the company and config path, and Jev gets the key", async () => {
@@ -290,7 +291,7 @@ describe("secrets: the host's secret_ref contract", () => {
     assert.equal(adds(server).length, 1);
   });
 
-  it("a bound MemOS token reaches MemOS as a bearer token", async () => {
+  it("MemOS gets no key: a leftover memosApiKeyRef is never resolved or sent", async () => {
     const secrets = fakeHostSecrets({
       bindings: [
         { companyId: A, secretId: OR_SECRET, configPath: "openrouterApiKeyRef" },
@@ -300,7 +301,9 @@ describe("secrets: the host's secret_ref contract", () => {
     });
     const h = await setup(server, { memosApiKeyRef: secretRef(MEMOS_SECRET) }, {}, { secrets });
     await h.emit("issue.comment.created", ...commentEvent());
-    assert.equal(adds(server)[0].headers.authorization, "Bearer memos-token");
+    assert.equal(adds(server).length, 1);
+    assert.equal(adds(server)[0].headers.authorization, undefined);
+    assert.deepEqual(h.secrets.calls.map((c) => c.options.configPath), ["openrouterApiKeyRef"]);
   });
 
   it("a plain string ref captures nothing and says how to fix it", async () => {
