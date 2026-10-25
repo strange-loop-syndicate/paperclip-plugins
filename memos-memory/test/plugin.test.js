@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, beforeEach, describe, it } from "node:test";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
+import { contentHash } from "../src/content.js";
 import manifest from "../src/manifest.js";
 import { createMemoryPlugin, RETRY_JOB_KEY, SECRET_RETRY_MS, SECRET_TTL_MS } from "../src/plugin.js";
 import { fakeHostSecrets, RATE_LIMIT, secretRef } from "./helpers/fake-secrets.js";
@@ -79,16 +80,21 @@ const jevCalls = (server) => server.llmRequests("/systemone");
 const extractCalls = (server) => server.llmRequests("/chat/completions");
 const runCtx = (over = {}) => ({ agentId: "agent-1", runId: "run-9", companyId: A, projectId: "p1", ...over });
 const pendingOf = (h) => h.getState({ scopeKind: "instance", namespace: "memos-pending", stateKey: "queue" }) ?? [];
+const MEMORY = "Pre-prompt recall runs in a command wrapper, not a plugin hook.";
+const dedupKey = (content, projectId = "p1") => ({ scopeKind: "company", scopeId: A, namespace: "memos-dedup", stateKey: `${projectId}:${contentHash(content)}` });
+const verdictLog = (h) => h.logs.filter((l) => l.message === "memory capture verdict").at(-1)?.meta;
 const api = (h, routeKey, query, companyId = A) => h.plugin.definition.onApiRequest({ routeKey, method: "GET", path: `/${routeKey}`, params: {}, query, body: null, actor: { actorType: "agent", actorId: "agent-1" }, companyId, headers: {} });
 
 function resetServer(server) {
   server.state.mode = "ok";
+  server.state.addMode = "ok";
   server.state.store.length = 0;
   server.state.requests.length = 0;
   server.state.llm.mode = "ok";
   server.state.llm.chatMode = "ok";
   server.state.llm.answers = { decision: 0.9, lesson: 0.1, outcome: 0.2, fact: 0.1, routine: 0.1 };
   server.state.llm.memories = [{ type: "decision", text: "Pre-prompt recall runs in a command wrapper, not a plugin hook." }];
+  server.state.llm.chatReply = null;
 }
 
 describe("capture: Jev gate and extraction", () => {
@@ -264,15 +270,16 @@ describe("secrets: the host's secret_ref contract", () => {
     await assert.rejects(s.resolve(OR_SECRET, { companyId: A }), /Invalid secret reference/);
     await assert.rejects(s.resolve(secretRef(OR_SECRET)), /companyId is required/);
     await assert.rejects(s.resolve(secretRef(OR_SECRET), { companyId: B }), /not bound/);
-    await assert.rejects(s.resolve(secretRef(OR_SECRET), { companyId: A, configPath: "memosApiKeyRef" }), /not bound/);
+    await assert.rejects(s.resolve(secretRef(OR_SECRET), { companyId: A, configPath: "otherRef" }), /not bound/);
     assert.equal(await s.resolve(secretRef(OR_SECRET), { companyId: A, configPath: "openrouterApiKeyRef" }), OR_KEY);
   });
 
-  it("both key fields are secret pickers in the settings form", () => {
-    for (const field of ["openrouterApiKeyRef", "memosApiKeyRef"]) {
-      assert.equal(manifest.instanceConfigSchema.properties[field].format, "secret-ref");
-      assert.equal(manifest.instanceConfigSchema.properties[field].type, "object");
-    }
+  it("the OpenAI key field is a secret picker, and there is no MemOS key field", () => {
+    const props = manifest.instanceConfigSchema.properties;
+    assert.equal(props.openrouterApiKeyRef.format, "secret-ref");
+    assert.equal(props.openrouterApiKeyRef.type, "object");
+    assert.equal(props.memosApiKeyRef, undefined);
+    assert.deepEqual(Object.keys(props).filter((k) => props[k].format === "secret-ref"), ["openrouterApiKeyRef"]);
   });
 
   it("resolves the binding with the company and config path, and Jev gets the key", async () => {
@@ -284,7 +291,7 @@ describe("secrets: the host's secret_ref contract", () => {
     assert.equal(adds(server).length, 1);
   });
 
-  it("a bound MemOS token reaches MemOS as a bearer token", async () => {
+  it("MemOS gets no key: a leftover memosApiKeyRef is never resolved or sent", async () => {
     const secrets = fakeHostSecrets({
       bindings: [
         { companyId: A, secretId: OR_SECRET, configPath: "openrouterApiKeyRef" },
@@ -294,7 +301,9 @@ describe("secrets: the host's secret_ref contract", () => {
     });
     const h = await setup(server, { memosApiKeyRef: secretRef(MEMOS_SECRET) }, {}, { secrets });
     await h.emit("issue.comment.created", ...commentEvent());
-    assert.equal(adds(server)[0].headers.authorization, "Bearer memos-token");
+    assert.equal(adds(server).length, 1);
+    assert.equal(adds(server)[0].headers.authorization, undefined);
+    assert.deepEqual(h.secrets.calls.map((c) => c.options.configPath), ["openrouterApiKeyRef"]);
   });
 
   it("a plain string ref captures nothing and says how to fix it", async () => {
@@ -420,6 +429,178 @@ describe("capture: shadow mode", () => {
     const other = await api(h, "shadow-log", { date: "2026-10-24" }, B);
     assert.deepEqual(other.body.entries, []);
   });
+
+  it("every entry names the project a save would write to", async () => {
+    const now = clock();
+    const seed = {
+      issues: [issue(), issue({ id: "iss-2", projectId: null, identifier: "SLS-2" })],
+      issueComments: [
+        comment(),
+        comment({ id: "c-skip" }),
+        comment({ id: "c-code", body: "```sh\nnpm test\n```" }),
+        comment({ id: "c-bad" }),
+        comment({ id: "c-none", issueId: "iss-2" }),
+      ],
+    };
+    const h = await setup(server, { captureMode: "shadow" }, seed, { now });
+    const emit = (commentId, issueId = "iss-1") => h.emit("issue.comment.created", ...commentEvent({ eventId: `evt-${commentId}`, entityId: issueId }, { commentId }));
+    await emit("c-1");
+    await emit("c-code");
+    await emit("c-none", "iss-2");
+    server.state.llm.chatReply = { content: "Sorry, I cannot help with that." };
+    await emit("c-bad");
+    server.state.llm.answers = { decision: 0.1, lesson: 0.1, outcome: 0.1, fact: 0.1, routine: 0.9 };
+    await emit("c-skip");
+    const entries = (await api(h, "shadow-log", { date: "2026-10-24" })).body.entries;
+    assert.deepEqual(
+      entries.map((e) => [e.commentId, e.verdict, e.projectId]),
+      [
+        ["c-1", "pass", "p1"],
+        ["c-code", "no-text", "p1"],
+        ["c-none", "pass", "unscoped"],
+        ["c-bad", "error", "p1"],
+        ["c-skip", "skip", "p1"],
+      ],
+    );
+  });
+});
+
+describe("capture: verdict log in save mode", () => {
+  let server;
+  before(async () => (server = await startFakeServer()));
+  after(() => server.close());
+  beforeEach(() => resetServer(server));
+
+  it("logs every verdict with memory types, not memory text", async () => {
+    const now = clock();
+    const seed = { issueComments: [comment(), comment({ id: "c-skip" }), comment({ id: "c-fail" })] };
+    const h = await setup(server, { captureMode: "save" }, seed, { now });
+    const emit = (commentId) => h.emit("issue.comment.created", ...commentEvent({ eventId: `evt-${commentId}` }, { commentId }));
+    await emit("c-1");
+    server.state.addMode = "empty";
+    server.state.llm.memories = [{ type: "lesson", text: "MemOS can answer an add with no created memory." }];
+    await emit("c-fail");
+    server.state.llm.answers = { decision: 0.1, lesson: 0.1, outcome: 0.1, fact: 0.1, routine: 0.9 };
+    await emit("c-skip");
+    assert.equal(adds(server).length, 2);
+    const res = await api(h, "shadow-log", { date: "2026-10-24" });
+    assert.deepEqual(
+      res.body.entries.map((e) => [e.commentId, e.mode, e.verdict, e.stored ?? null]),
+      [
+        ["c-1", "save", "pass", ["stored"]],
+        ["c-fail", "save", "pass", ["failed"]],
+        ["c-skip", "save", "skip", null],
+      ],
+    );
+    const [pass, fail] = res.body.entries;
+    assert.deepEqual(pass.memoryTypes, ["decision"]);
+    assert.deepEqual(fail.memoryTypes, ["lesson"]);
+    assert.equal(pass.memories, undefined);
+    assert.equal(pass.type, "decision");
+    assert.equal(pass.jevCostUsd, 0.0001);
+    assert.equal(pass.extractCostUsd, 0.0002);
+    assert.match(fail.error, /no created memory IDs/);
+    assert.doesNotMatch(JSON.stringify(res.body), /command wrapper|answer an add|Tests pass/, "the save-mode log holds no memory or comment text");
+    assert.equal(verdictLog(h).verdict, "skip", "the server log still gets every verdict");
+  });
+});
+
+// A long agent comment, shaped like the SLS-145 one that sat in `pending`:
+// headings, links, quoted titles and many facts.
+const LONG_BODY = [
+  "The bug is **already reported upstream**, so I did not open a new issue.",
+  "## Existing upstream reports",
+  ...Array.from({ length: 12 }, (_, i) => `- [#${14300 + i}](https://example.test/issues/${14300 + i}): "Plugin hot reload silently stops event delivery" in step ${i}; the watcher keeps the old folder {path ${i}}.`),
+  "## Our evidence",
+  ...Array.from({ length: 10 }, (_, i) => `- **Gap ${i}:** the last event was handled at 20:${10 + i}:17Z and events came back after the disable and the enable.`),
+  "## What is needed",
+  "- Someone with a GitHub account posts the draft. The card below asks you to route this. END-OF-LONG-COMMENT",
+].join("\n");
+
+describe("capture: an unusable extractor reply", () => {
+  let server;
+  before(async () => (server = await startFakeServer()));
+  after(() => server.close());
+  beforeEach(() => resetServer(server));
+
+  const longSeed = { issueComments: [comment({ body: LONG_BODY })] };
+  const shadowEntries = async (h) => (await api(h, "shadow-log", { date: "2026-10-24" })).body.entries;
+
+  it("a long comment reaches the extractor whole, with room for the reply", async () => {
+    assert.ok(LONG_BODY.length > 2500, "the fixture is long");
+    const h = await setup(server, { captureMode: "shadow" }, longSeed, { now: clock() });
+    await h.emit("issue.comment.created", ...commentEvent());
+    const [call] = extractCalls(server);
+    assert.match(call.body.messages[1].content, /END-OF-LONG-COMMENT/, "the comment is not cut");
+    assert.ok(call.body.max_tokens >= 1000, `max_tokens ${call.body.max_tokens} leaves room for three memories`);
+    assert.equal((await shadowEntries(h))[0].verdict, "pass");
+  });
+
+  it("a reply cut off at max_tokens keeps its complete memories", async () => {
+    const full = [
+      { type: "fact", text: "Upstream issue #14335 reports that restartWorker clears the new worker's event subscriptions." },
+      { type: "outcome", text: 'Upstream issue #10613 is titled "Plugin hot reload silently stops event delivery".' },
+    ];
+    const content = `\`\`\`json\n{"memories":[${full.map((m) => JSON.stringify(m)).join(",")},{"type":"fact","text":"The 2026.1012.0 watcher kept wat`;
+    server.state.llm.chatReply = { content, finish_reason: "length" };
+    const h = await setup(server, { captureMode: "shadow" }, longSeed, { now: clock() });
+    await h.emit("issue.comment.created", ...commentEvent());
+    const [entry] = await shadowEntries(h);
+    assert.equal(entry.verdict, "pass");
+    assert.equal(entry.salvaged, true);
+    assert.deepEqual(entry.memories.map((m) => m.content), full.map((m) => m.text));
+    assert.equal(pendingOf(h).length, 0);
+  });
+
+  it("an unescaped quote in a memory still yields the memory", async () => {
+    server.state.llm.chatReply = { content: '{"memories":[{"type":"fact","text":"Upstream #10613 is titled "Plugin hot reload silently stops event delivery"."}]}' };
+    const h = await setup(server, { captureMode: "shadow" }, longSeed, { now: clock() });
+    await h.emit("issue.comment.created", ...commentEvent());
+    const [entry] = await shadowEntries(h);
+    assert.equal(entry.verdict, "pass");
+    assert.deepEqual(entry.memories, [{ type: "fact", content: 'Upstream #10613 is titled "Plugin hot reload silently stops event delivery".' }]);
+  });
+
+  it("a reply with no memories list is an error verdict after one try, not a 24 h retry", async () => {
+    server.state.llm.chatReply = { content: "I cannot post to GitHub, but here is a summary: SECRET-REPLY-TEXT" };
+    const h = await setup(server, { captureMode: "shadow" }, longSeed, { now: clock() });
+    await h.emit("issue.comment.created", ...commentEvent());
+    assert.equal(extractCalls(server).length, 1, "no HTTP retry for an answer");
+    assert.equal(pendingOf(h).length, 0, "nothing waits in pending");
+    const [entry] = await shadowEntries(h);
+    assert.equal(entry.verdict, "error");
+    assert.match(entry.error, /^extractor: extractor answered without a memories list \(finish_reason=stop, \d+ chars, no JSON object\)$/);
+    assert.equal(entry.extractCostUsd, 0.0002);
+    assert.doesNotMatch(JSON.stringify(entry), /SECRET-REPLY-TEXT|END-OF-LONG-COMMENT/, "neither reply nor comment text is logged");
+
+    await h.emit("issue.comment.created", ...commentEvent({ eventId: "evt-again" }));
+    assert.equal(jevCalls(server).length, 1, "the item is done; a redelivery makes no new call");
+  });
+
+  it("an item already waiting leaves the queue on its first bad reply", async () => {
+    const now = clock();
+    server.state.llm.chatMode = "error503";
+    const h = await setup(server, { captureMode: "shadow" }, longSeed, { now });
+    await h.emit("issue.comment.created", ...commentEvent());
+    assert.equal(pendingOf(h).length, 1);
+
+    server.state.llm.chatMode = "ok";
+    server.state.llm.chatReply = { content: '{"memories": "none"}' };
+    now.advance(11 * 60 * 1000);
+    await h.runJob(RETRY_JOB_KEY);
+    assert.equal(pendingOf(h).length, 0);
+    const entries = await shadowEntries(h);
+    assert.deepEqual(entries.map((e) => e.verdict), ["error"]);
+  });
+
+  it("a provider error inside a 200 has no answer and still waits", async () => {
+    server.state.llm.chatReply = { content: "", finish_reason: "error" };
+    const h = await setup(server, { captureMode: "shadow" }, longSeed, { now: clock() });
+    await h.emit("issue.comment.created", ...commentEvent());
+    assert.equal(pendingOf(h).length, 1);
+    assert.match(pendingOf(h)[0].lastError, /no model reply \(finish_reason=error\)/);
+    assert.deepEqual(await shadowEntries(h), []);
+  });
 });
 
 describe("capture: outages wait in a retry queue", () => {
@@ -482,6 +663,41 @@ describe("capture: outages wait in a retry queue", () => {
     await h.runJob(RETRY_JOB_KEY);
     assert.equal(server.state.store.length, 1);
     assert.equal(pendingOf(h).length, 0);
+  });
+
+  it("a normal add is stored, sets the dedup marker, and leaves nothing waiting", async () => {
+    const h = await setup(server, {}, {}, { now: clock() });
+    await h.emit("issue.comment.created", ...commentEvent());
+    assert.equal(server.state.store.length, 1);
+    assert.equal(pendingOf(h).length, 0);
+    assert.ok(h.getState(dedupKey(MEMORY)), "dedup marker set");
+    const verdict = verdictLog(h);
+    assert.deepEqual(verdict.stored, ["stored"]);
+    assert.equal(verdict.error, undefined);
+  });
+
+  it("MemOS answers 200 but stores nothing: failed, no dedup marker, and the retry job stores it", async () => {
+    const now = clock();
+    server.state.addMode = "empty";
+    const h = await setup(server, {}, {}, { now });
+    await h.emit("issue.comment.created", ...commentEvent());
+    assert.equal(adds(server).length, 1, "MemOS was asked");
+    assert.equal(server.state.store.length, 0);
+    assert.equal(h.getState(dedupKey(MEMORY)) ?? null, null, "no dedup marker for a memory MemOS did not store");
+    const verdict = verdictLog(h);
+    assert.deepEqual(verdict.stored, ["failed"]);
+    assert.equal(verdict.error, "memos: MemOS answered with no created memory IDs");
+    const queue = pendingOf(h);
+    assert.equal(queue.length, 1, "the item waits for a retry");
+    assert.equal(queue[0].lastError, "memos: MemOS answered with no created memory IDs");
+    assert.doesNotMatch(JSON.stringify({ verdict: verdict.error, queue }), /command wrapper/, "the reason holds no memory or comment text");
+
+    server.state.addMode = "ok";
+    now.advance(11 * 60 * 1000);
+    await h.runJob(RETRY_JOB_KEY);
+    assert.equal(server.state.store.length, 1, "stored on retry");
+    assert.equal(pendingOf(h).length, 0);
+    assert.ok(h.getState(dedupKey(MEMORY)), "dedup marker set once MemOS stored it");
   });
 
   it("a bad key fails fast without retries and waits", async () => {
@@ -598,6 +814,19 @@ describe("plugin tools and sharing", () => {
     assert.equal(first.data.status, "stored");
     assert.equal(second.data.status, "duplicate");
     assert.equal(adds(server)[0].body.info.kind, "fact");
+  });
+
+  it("memory_retain reports failure when MemOS stores nothing, and the next call tries again", async () => {
+    const h = await setup(server);
+    server.state.addMode = "empty";
+    const first = await h.executeTool("memory_retain", { content: "Deploys go through DevOps" }, runCtx());
+    assert.equal(first.data.status, "failed");
+    assert.match(first.content, /not stored/);
+    assert.equal(h.getState(dedupKey("Deploys go through DevOps")) ?? null, null);
+    server.state.addMode = "ok";
+    const second = await h.executeTool("memory_retain", { content: "Deploys go through DevOps" }, runCtx());
+    assert.equal(second.data.status, "stored");
+    assert.equal(adds(server).length, 2);
   });
 
   it("memory_retain refuses an issue from another project and writes nothing", async () => {

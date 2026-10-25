@@ -1,6 +1,6 @@
 {
   "name": "@sls/memos-memory",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Paperclip memory plugin backed by self-hosted MemOS: Jev-gated short memories, pre-prompt recall for claude_local and codex_local",
   "private": true,
   "type": "module",
@@ -10,7 +10,8 @@
     "worker": "./src/worker.js"
   },
   "scripts": {
-    "test": "node --test --test-reporter=spec \"test/*.test.js\""
+    "test": "node --test --test-reporter=spec \"test/*.test.js\"",
+    "check": "find src ui e2e test bin -type f \\( -name '*.js' -o -name '*.mjs' -o -path 'bin/*' \\) -print0 | xargs -0 -n1 node --check && node -e \"import('./src/manifest.js').then((m) => { if (!m.default?.id) process.exit(1); })\" && npm test"
   },
   "engines": {
     "node": ">=20.3"

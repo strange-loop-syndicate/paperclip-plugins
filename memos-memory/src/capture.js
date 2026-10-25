@@ -1,7 +1,7 @@
 // Capture pipeline for one item (a comment, or a run's result comment):
 // Jev decides whether it holds anything worth keeping, the extractor writes
-// it as a few short memories, and only those are stored. In shadow mode the
-// verdicts and memories are logged and nothing is stored.
+// it as a few short memories, and only those are stored. Every verdict is
+// logged. In shadow mode the log also holds the memories and nothing is stored.
 //
 // Items hold IDs only. When Jev or the extractor is down, the item waits in
 // plugin state and the retry job tries again, for up to 24 h. Tasks never wait.
@@ -101,19 +101,22 @@ export function createCapture({ now = () => Date.now() } = {}) {
     });
   }
 
-  // ---- shadow log (company scope, one key per UTC day) ----
+  // ---- verdict log (company scope, one key per UTC day, both modes) ----
 
   async function logVerdict(ctx, cfg, item, record) {
     const entry = { at: new Date(now()).toISOString(), mode: cfg.captureMode, key: item.key, source: item.source, ...record };
     ctx.logger.info("memory capture verdict", entry);
-    if (cfg.captureMode !== "shadow") return;
+    // In save mode the memories live in MemOS, where recall applies sharing.
+    // The log is open to every agent of the company, so it keeps their types only.
+    const { memories, ...rest } = entry;
+    const logged = cfg.captureMode === "shadow" || !memories ? entry : { ...rest, memoryTypes: memories.map((m) => m.type) };
     const day = entry.at.slice(0, 10);
     try {
       await withLock(`shadow:${item.companyId}:${day}`, async () => {
         const key = shadowKey(item.companyId, day);
         const log = (await ctx.state.get(key)) ?? [];
         if (log.length >= SHADOW_LOG_MAX_PER_DAY) return;
-        log.push(entry);
+        log.push(logged);
         await ctx.state.set(key, log);
       });
     } catch (err) {
@@ -136,7 +139,7 @@ export function createCapture({ now = () => Date.now() } = {}) {
   /**
    * Process one item. `retain(scope, content, metadata)` stores a memory and
    * returns { status }. Returns a status string:
-   * duplicate | ignored | no-text | skipped | empty | shadow | stored | queued.
+   * duplicate | ignored | no-text | skipped | empty | error | shadow | stored | queued.
    */
   async function processItem(ctx, cfg, item, { retain, deadline }) {
     const lockKey = `${item.companyId}:${item.key}`;
@@ -168,7 +171,10 @@ export function createCapture({ now = () => Date.now() } = {}) {
     }
     if (!comment || (comment.authorType !== "agent" && comment.authorType !== "user")) return "ignored";
 
+    // The scope a save writes to; shadow entries carry its projectId too.
+    const scope = scopeFor({ companyId, projectId: issue.projectId ?? UNSCOPED_PROJECT });
     const ids = {
+      projectId: scope.projectId,
       issueId: issue.id,
       issueIdentifier: issue.identifier ?? null,
       commentId: comment.id,
@@ -204,9 +210,16 @@ export function createCapture({ now = () => Date.now() } = {}) {
     try {
       extracted = await cfg.extractor.extract({ text, task, source, hintType: gate.type }, { deadline });
     } catch (err) {
-      return queue(ctx, item, `extractor: ${err.message}`);
+      if (!err?.badReply) return queue(ctx, item, `extractor: ${err.message}`);
+      // A bad answer repeats on every retry: record it once and stop.
+      const error = `extractor: ${err.message}`;
+      ctx.logger.warn(`memory capture gave up on an item: ${error}`, { key: item.key, companyId });
+      await logVerdict(ctx, cfg, item, { ...ids, verdict: "error", error, type: gate.type, probs: gate.probs, jevCostUsd, extractCostUsd: err.costUsd ?? null });
+      await markDone(ctx, item, "error");
+      return "error";
     }
     const record = { ...ids, type: gate.type, probs: gate.probs, memories: extracted.memories, jevCostUsd, extractCostUsd: extracted.costUsd };
+    if (extracted.salvaged) record.salvaged = true;
     if (extracted.memories.length === 0) {
       await logVerdict(ctx, cfg, item, { ...record, verdict: "empty" });
       await markDone(ctx, item, "empty");
@@ -218,7 +231,6 @@ export function createCapture({ now = () => Date.now() } = {}) {
       return "shadow";
     }
 
-    const scope = scopeFor({ companyId, projectId: issue.projectId ?? UNSCOPED_PROJECT });
     const results = await Promise.allSettled(
       extracted.memories.map((m) =>
         retain(scope, m.content, {
@@ -232,14 +244,22 @@ export function createCapture({ now = () => Date.now() } = {}) {
       ),
     );
     const statuses = results.map((r) => (r.status === "fulfilled" ? r.value.status : "failed"));
+    // The first failure's reason, never memory text: an HTTP error, a
+    // timeout, or an add MemOS answered with no created memory IDs.
+    const failure = results.find((r) => r.status === "rejected" || r.value.status === "failed");
+    if (failure) {
+      const error = `memos: ${failure.status === "rejected" ? failure.reason?.message : (failure.value.error ?? "add failed")}`;
+      await logVerdict(ctx, cfg, item, { ...record, verdict: "pass", stored: statuses, error });
+      return queue(ctx, item, error);
+    }
     await logVerdict(ctx, cfg, item, { ...record, verdict: "pass", stored: statuses });
-    if (statuses.includes("failed")) return queue(ctx, item, "memos add failed");
     await markDone(ctx, item, "stored");
     return "stored";
   }
 
-  // Every failure is retried the same way, an outage or a malformed answer:
-  // both are rare, and the queue is bounded by age.
+  // Every failure with no answer is retried the same way, an outage or a
+  // malformed body: both are rare, and the queue is bounded by age. A model
+  // answer that is unusable is not queued (see the extractor's catch above).
   async function queue(ctx, item, reason) {
     ctx.logger.warn(`memory capture deferred: ${reason}`, { key: item.key, companyId: item.companyId });
     await enqueue(ctx, item, reason);

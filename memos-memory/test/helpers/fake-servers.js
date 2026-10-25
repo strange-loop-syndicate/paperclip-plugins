@@ -8,6 +8,8 @@ import { createServer } from "node:http";
 export async function startFakeServer({ issues = {} } = {}) {
   const state = {
     mode: "ok", // ok | slow | error500
+    // ok | empty (200 with no created memories, as when the MemOS embedder fails)
+    addMode: "ok",
     issueMode: "ok", // ok | hang (Paperclip issue lookup never answers)
     delayMs: 0,
     issues: { ...issues },
@@ -23,6 +25,9 @@ export async function startFakeServer({ issues = {} } = {}) {
       answers: { decision: 0.9, lesson: 0.1, outcome: 0.2, fact: 0.1, routine: 0.1 },
       // Extracted memories, or a function of the request body
       memories: [{ type: "decision", text: "Pre-prompt recall runs in a command wrapper, not a plugin hook." }],
+      // A raw chat choice `{ content, finish_reason }` (or a function of the
+      // request body) that replaces the JSON memories reply; null for none.
+      chatReply: null,
     },
   };
 
@@ -62,8 +67,10 @@ export async function startFakeServer({ issues = {} } = {}) {
           return send(200, { model: b.model, answers, usage: { input_tokens: 100, cost: 0.0001 } });
         }
         if (state.llm.chatMode === "error503") return send(503, { error: "overloaded" });
+        const raw = typeof state.llm.chatReply === "function" ? state.llm.chatReply(b) : state.llm.chatReply;
+        if (raw) return send(200, { choices: [{ finish_reason: raw.finish_reason ?? "stop", message: { role: "assistant", content: raw.content } }], usage: { cost: 0.0002 } });
         const memories = typeof state.llm.memories === "function" ? state.llm.memories(b) : state.llm.memories;
-        return send(200, { choices: [{ message: { role: "assistant", content: JSON.stringify({ memories }) } }], usage: { cost: 0.0002 } });
+        return send(200, { choices: [{ finish_reason: "stop", message: { role: "assistant", content: JSON.stringify({ memories }) } }], usage: { cost: 0.0002 } });
       }
 
       if (state.mode === "slow" || state.delayMs > 0) {
@@ -73,8 +80,11 @@ export async function startFakeServer({ issues = {} } = {}) {
 
       if (req.url === "/product/add") {
         const b = entry.body;
+        // MemOS 2.0.33 answers 200 even when it prepared nothing to add.
+        if (state.addMode === "empty") return send(200, { code: 200, message: "Memory added successfully", data: [] });
         state.store.push({ userId: b.user_id, cubeId: b.mem_cube_id, content: b.memory_content, info: b.info ?? {} });
-        return send(200, { code: 200, message: "ok", data: null });
+        const memoryId = `mem-${state.store.length}`;
+        return send(200, { code: 200, message: "Memory added successfully", data: [{ memory: b.memory_content, memory_id: memoryId, memory_type: "UserMemory", cube_id: b.mem_cube_id }] });
       }
       if (req.url === "/product/search") {
         const b = entry.body;

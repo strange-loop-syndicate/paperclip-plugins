@@ -17,42 +17,44 @@ This package has two parts. They work independently.
 
 - Node.js 20.3 or later on the adapter's `PATH`. The wrappers use `#!/usr/bin/env node`. If `node` is missing there, the adapter cannot start the wrapper and the run fails. Check this before you switch an agent over.
 - A MemOS server that serves the product API (`POST /product/search`, `POST /product/add`). [SLS-61](/SLS/issues/SLS-61) sets it up.
-- An OpenRouter key stored as a Paperclip secret, for Jev and the extractor. Without it the plugin captures nothing; recall still works.
+- An API key for an OpenAI-compatible endpoint (OpenRouter by default), stored as a Paperclip secret. The plugin uses it for the decision model (Jev) and the extract model. Without it the plugin captures nothing; recall still works. It is separate from the keys in `memos.env`, which MemOS uses for embeddings.
 - `npm install` in this folder, for the plugin only. The wrapper and the settings page need no dependencies and no build step.
 
 ## 1. Install the plugin
 
-1. Install it as a local-path plugin from the `memos-memory/` folder of a `paperclip-plugins` checkout (`https://github.com/strange-loop-syndicate/paperclip-plugins`), for example `/Users/claude/work/workspace/paperclip-plugins/memos-memory`. The manifest is `src/manifest.js`, the worker `src/worker.js`, the UI `ui/index.js`. Local-path installs are a development workflow. For a deployed setup, publish the package to npm and install it from there.
-2. Bind the OpenRouter key to the plugin in each company that uses it:
-   1. In the company's plugin settings, find the **OpenRouter API key** field (`openrouterApiKeyRef`). It is a secret picker, not a text box.
+1. Install or update it only through the release script, from a merged commit: `node scripts/release-install.mjs memos-memory` (add `--allow-new` on a first install). Run it from a fresh worktree or clone at `origin/main` (root `README.md` → "Run it"). Never `git pull` in `/Users/claude/work/paperclip-plugins-repo` to get the script: until every plugin runs from a release copy, a pull there reloads the live plugins. See the root [`README.md`](../README.md) → "Install and update". The script installs from a read-only release copy. Never install from a checkout: a write there hot-reloads the worker and drops its event subscriptions, so capture stops with no error. The manifest is `src/manifest.js`, the worker `src/worker.js`, the UI `ui/index.js`.
+   - **Check after an update:** post a test comment on a task in a captured project. Within about 1 minute, the `shadow-log` route has an entry with that `commentId`.
+   - **The recall wrapper is separate.** The adapter `command` path (sections 2 and 3) is not a plugin install, and Paperclip does not watch it.
+2. Bind the LLM key to the plugin in each company that uses it:
+   1. In the company's plugin settings, find the **LLM provider: OpenAI key** field (`openrouterApiKeyRef`). It is a secret picker, not a text box.
    2. Pick the company secret that holds the key, or use **Create & bind** to make one. Leave the version at `latest` unless you must pin one.
    3. Save. The form stores `{ "type": "secret_ref", "secretId": "<uuid>" }` in `openrouterApiKeyRef`, and Paperclip binds that secret to this plugin at that config path. The plugin can resolve only a bound secret.
    4. Through the API instead: `POST /api/plugins/:id/config` with `companyId` and `configJson.openrouterApiKeyRef` set to that object. The binding is made on the same save. A plain string, also a bare secret UUID, does not work: the config save or the resolve refuses it.
-   5. Check: the next agent comment in a captured project gives a `shadow` entry in the `shadow-log` route. If the key does not resolve, the worker log says `openrouter api key secret could not be resolved` or `is not a secret binding`.
-   6. A MemOS bearer token, if MemOS needs one, uses `memosApiKeyRef` the same way.
+   5. Check: the next agent comment in a captured project gives a `shadow` entry in the `shadow-log` route. If the key does not resolve, the worker log says `OpenAI key (openrouterApiKeyRef) secret could not be resolved` or `is not a secret binding`.
+   6. MemOS takes no key. The `memosApiKeyRef` field is gone (SLS-150). A value left in a saved config is ignored.
 
    The worker keeps a resolved key in memory for 10 minutes, and retries a failed resolve after 1 minute. The host allows 30 resolves a minute per company. A config save clears that company's keys at once, so a rotated key takes effect on save.
-3. Set the plugin config:
+3. Set the plugin config. The settings form shows the fields in this order. Each title starts with its group (`Capture: mode`), because the host form has group headings only inside a collapsed "Advanced options" box. The config keys keep their v1 names, so a saved config and its key binding keep working.
 
-| Key | Default | Meaning |
-|---|---|---|
-| `memosBaseUrl` | — | MemOS base URL, for example `http://127.0.0.1:8001`. If it is empty, the plugin does nothing |
-| `memosApiKeyRef` | — | Optional secret binding (`{ type: "secret_ref", secretId }`) for a MemOS bearer token |
-| `openrouterApiKeyRef` | — | Secret binding (`{ type: "secret_ref", secretId }`) for the OpenRouter key. Capture is off without it. See step 2 |
-| `captureMode` | `shadow` | `shadow` logs Jev verdicts and extracted memories and saves nothing. `save` stores the memories. Switching to `save` is a board decision |
-| `saveP` | `0.7` | Jev probability a content question must reach for an item to pass |
-| `routineP` | `0.5` | An item whose "routine status only" probability reaches this is skipped |
-| `jevModel` | `typesafe/jev-1.13` | Pinned Jev model on OpenRouter |
-| `extractModel` | `~anthropic/claude-haiku-latest` | Model for the extraction call (the same Haiku alias MemOS's reader uses) |
-| `openrouterBaseUrl` | `https://openrouter.ai/api/v1` | OpenRouter API base. Tests point it at a fake server |
-| `jevTimeoutMs` / `extractTimeoutMs` | `5000` / `15000` | Timeout for each try. Each call makes up to 3 tries |
-| `recallTimeoutMs` | `3000` | Deadline for `memory_recall`, across all scopes |
-| `captureTimeoutMs` | `5000` | Timeout for each MemOS write |
-| `topK` | `8` | Maximum number of memories returned |
-| `captureComments` | `true` | Send new agent and board comments to the Jev gate |
-| `captureRunOutcomes` | `true` | Send each finished run's newest agent comment to the Jev gate |
-| `captureProjectIds` | `[]` | Capture allowlist. If set, comments, run results and `memory_retain` are captured only for these project IDs. Empty captures every project |
-| `eventHealthIssue` | `SLS-120` | Issue (identifier or ID) that gets one comment when the plugin stops getting events. Empty logs the error only. See "Deaf plugin alert" |
+| Settings title | Key | Default | Meaning |
+|---|---|---|---|
+| Capture: mode | `captureMode` | `shadow` | `shadow` logs the verdicts and extracted memories and saves nothing. `save` stores the memories. Switching to `save` is a board decision |
+| Capture: projects | `captureProjectIds` | `[]` | Empty = every project. If set, comments, run results and `memory_retain` are captured only for these project IDs. The host form has no project picker, so enter IDs |
+| Capture: comments | `captureComments` | `true` | Send new agent and board comments to the decision model |
+| Capture: run outcomes | `captureRunOutcomes` | `true` | Send each finished run's newest agent comment to the decision model |
+| Decision: model | `jevModel` | `typesafe/jev-1.13` | Keeps or skips each item. Gives probabilities only, writes no text |
+| Decision: keep threshold (saveP) | `saveP` | `0.7` | Probability a content question must reach for an item to pass |
+| Decision: routine threshold (routineP) | `routineP` | `0.5` | An item whose "routine status only" probability reaches this is skipped |
+| Decision: timeout (ms) | `jevTimeoutMs` | `5000` | Timeout for each try. Up to 3 tries |
+| Extraction: model | `extractModel` | `~anthropic/claude-haiku-latest` | Writes the short memories (the same Haiku alias MemOS's reader uses) |
+| Extraction: timeout (ms) | `extractTimeoutMs` | `15000` | Timeout for each try. Up to 3 tries |
+| LLM provider: OpenAI base URL | `openrouterBaseUrl` | `https://openrouter.ai/api/v1` | Base of an OpenAI-compatible API. The extract model calls `/chat/completions`; the decision model calls `/systemone`, which OpenRouter serves. Tests point it at a fake server |
+| LLM provider: OpenAI key | `openrouterApiKeyRef` | — | Secret binding (`{ type: "secret_ref", secretId }`) for that API. Capture is off without it. See step 2 |
+| MemOS: base URL | `memosBaseUrl` | — | MemOS base URL, for example `http://127.0.0.1:8001`. If it is empty, the plugin does nothing. MemOS takes no key |
+| MemOS: capture timeout (ms) | `captureTimeoutMs` | `5000` | Timeout for each MemOS write |
+| Recall: max memories (topK) | `topK` | `8` | Maximum number of memories returned |
+| Recall: timeout (ms) | `recallTimeoutMs` | `3000` | Deadline for `memory_recall`, across all scopes |
+| Alerts: deaf plugin issue | `eventHealthIssue` | `SLS-120` | Issue (identifier or ID) that gets one comment when the plugin stops getting events. Empty logs the error only. See "Deaf plugin alert" |
 
 **Plugin config is per company.** `POST /api/plugins/:id/config` needs a `companyId`, and the config applies to that company only. With an empty `captureProjectIds`, every comment in every project of that company goes to Jev, and every comment Jev passes goes to the extractor. Set `captureProjectIds` for a trial. "Capture all projects" is a board decision.
 
@@ -146,9 +148,9 @@ Sharing is off by default. The **Memory sharing** page under company settings is
 | **Items** | Each new agent or board comment (`issue.comment.created`), and each finished run's newest agent comment (`agent.run.finished`). Both use the key `comment:<id>`, so one comment is processed once |
 | **Text** | Fenced code blocks and `<details>` sections are cut first. A comment with no prose left is skipped |
 | **Jev gate** | One call to `typesafe/jev-1.13`. Questions: has a decision / lesson / outcome / durable fact, and "routine status only". The item passes if a content question is ≥ `saveP` and routine is < `routineP`. Jev never writes text |
-| **Extraction** | One Haiku call per passed item: "extract the decisions, lessons, outcomes and facts, one short sentence each, drop routine status". At most 3 memories, 300 characters each, each with its own type. An empty list saves nothing |
+| **Extraction** | One Haiku call per passed item: "extract the decisions, lessons, outcomes and facts, one short sentence each, drop routine status". At most 3 memories, 300 characters each, each with its own type. An empty list saves nothing. A reply cut off at `max_tokens` or with invalid JSON keeps its complete memory objects (`salvaged: true`). A reply with no usable list is an `error` verdict, not a retry |
 | **Save** | In `save` mode, each memory is a sync `fast` add with our IDs. Raw comment text is never stored |
-| **Shadow** | In `shadow` mode (the default), verdicts and extracted memories are logged and nothing is stored |
+| **Shadow** | In `shadow` mode (the default), verdicts and extracted memories are logged and nothing is stored. `save` mode logs the verdicts too, see below |
 
 - **Metadata on every memory:** `companyId`, `projectId`, `issueId`, `issueIdentifier`, `commentId`, `runId`, `agentId` or `userId`, `authorType`, `kind` (the memory's type), `jevType`, `jevP`, `itemKey`, `contentHash`, `source`.
 - **No blind run note.** v1 stored one note for every succeeded run, and extracted labelled lines with a regex. Both are gone.
@@ -156,9 +158,11 @@ Sharing is off by default. The **Memory sharing** page under company settings is
 - **Dedup:** sha256 of the normalized memory text (NFKC, lower case, paired markdown emphasis removed, collapsed spaces, no trailing punctuation), per company + project scope (namespace `memos-dedup`). Items are also marked done (namespace `memos-items`), so a redelivered event makes no second Jev call. In-process locks cover concurrent redelivery.
 - **Why the plugin extracts, not MemOS:** see [`docs/sls-99-step1-fine-add.md`](docs/sls-99-step1-fine-add.md).
 
-## Shadow log and report
+## Verdict log and report
 
-- **Where:** plugin state, one key per company and UTC day (namespace `memos-shadow`), at most 2000 entries a day. Each entry holds IDs, the verdict, Jev probabilities, the extracted memories and the cost of both calls. It holds no comment text.
+- **Where:** plugin state, one key per company and UTC day (namespace `memos-shadow`), at most 2000 entries a day, in both modes. Each entry holds `mode`, IDs (including the `projectId` a save writes to), the verdict, Jev probabilities and the cost of both calls. It holds no comment text.
+- **Memories:** a `shadow` entry holds the extracted memories. A `save` entry holds only their types (`memoryTypes`) and the add results (`stored`), because the memories are in MemOS, where recall applies sharing.
+- **Retries:** a save that fails is logged, then retried, so one item can have several entries. Count the last entry per `key`.
 - **Read it:** `GET /api/plugins/sls.memos-memory/api/shadow-log?companyId=<id>&date=YYYY-MM-DD` as a board user or an agent of that company. The answer also lists the items waiting for a retry.
 - **Server log:** every verdict is also logged as `memory capture verdict`, in both modes.
 
@@ -168,6 +172,7 @@ Sharing is off by default. The **Memory sharing** page under company settings is
 - **Retry job:** `retry-pending-captures` runs every 10 minutes. Waits grow from 10 minutes to 2 hours. After 24 h an item is dropped with a warning. The queue holds at most 1000 items.
 - **Inline budget:** an event handler stops after 25 s (the host gives up at 30 s) and leaves the rest to the job. Tasks never wait on capture.
 - **Bad key:** 401, 402 and 403 are not retried inside one call; the item still waits for the job.
+- **Bad answer, not an outage:** when the extractor answers but no memories list can be read, the item gets an `error` verdict with the reason (finish reason and reply length, never the reply text) and is marked done. At temperature 0 a retry gives the same answer.
 
 ## Deaf plugin alert
 
@@ -218,10 +223,11 @@ npm test
 - **Jev and the extractor see comment text.** It goes to OpenRouter (Jev and Haiku). Code blocks and `<details>` are cut first; other secrets pasted in prose are not.
 - **The run result is a comment.** The SDK gives plugins no read of a run's own result, so the run event uses the run's newest agent comment.
 - **`memory_retain` is not gated.** It stores what the agent wrote, in both modes. It is an explicit call, not capture.
-- **The shadow log ignores sharing.** Any agent of the company can read the extracted memories of every project through `shadow-log`. It stays open to agents because an agent writes the shadow report. Limit it to `board` once saving is on.
+- **The shadow log ignores sharing.** In `shadow` mode, any agent of the company can read the extracted memories of every project through `shadow-log`. It stays open to agents because an agent writes the report. In `save` mode the log holds no memory text.
 - **Archived projects leave sharing.** When the page saves, shares of an archived project are dropped with a log line. Unarchiving the project later does not bring them back. Set them again on the page.
 - **Double signals outside Paperclip.** Started by a non-job-control `sh -c` under a terminal, the wrapper is not group leader but shares the group with the CLI. Ctrl-C then reaches the CLI twice, and Claude treats that as "exit now". Paperclip spawns the wrapper as group leader, so this does not happen there.
 - **Resumed sessions repeat memories.** Each resumed heartbeat adds a new block of up to `MEMOS_MAX_BLOCK_CHARS` to the conversation, often with the same memories. To limit the cost, lower `MEMOS_MAX_BLOCK_CHARS`. A later version could track injected hashes per session.
+- **An add counts as stored only with created memory IDs.** MemOS answers `/product/add` with HTTP 200 even when it stores nothing, for example when its embedder fails ("No add/update items prepared"). An answer with no `memory_id` is a failed add: no dedup marker, and the item waits in the retry queue with the reason `memos: MemOS answered with no created memory IDs` (shown in the verdict log and the queue's `lastError`, without memory text). Seen in [SLS-147](/SLS/issues/SLS-147), fixed in [SLS-149](/SLS/issues/SLS-149).
 - **Dedup marker write can fail after the memory is stored.** The memory still counts as stored and a warning is logged. A redelivered event can then store it a second time. MemOS has no write-if-absent call to close this gap.
 - **Decision effects can give a false deaf alert.** A board decision with a `comment_on_issue` effect writes a board comment with no event and no mark that tells it apart. If no other event comes for 10 minutes after one, the plugin alerts.
 - **The deaf check reads up to 25 threads.** Only when no event came for 10 minutes: it lists the company's issues and reads the comments of those with activity after the last event, newest first.

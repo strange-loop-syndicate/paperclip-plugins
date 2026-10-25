@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { contentHash, normalizeContent } from "../src/content.js";
-import { cleanMemories } from "../src/extractor.js";
+import { cleanMemories, parseReply } from "../src/extractor.js";
 import { formatMemoryBlock, formatMemoryLine } from "../src/format.js";
 import { hasProse, itemText } from "../src/item.js";
 import { decideGate, questions } from "../src/jev.js";
@@ -132,6 +132,39 @@ describe("extracted memories", () => {
   it("returns nothing for a non-list", () => {
     assert.deepEqual(cleanMemories(null), []);
     assert.deepEqual(cleanMemories({ text: "x" }), []);
+  });
+});
+
+describe("extractor reply parsing", () => {
+  const m = { type: "fact", text: "MemOS listens on port 8001." };
+
+  it("reads a fenced reply with prose and braces around it", () => {
+    const reply = `Here you go:\n\`\`\`json\n${JSON.stringify({ memories: [m] })}\n\`\`\`\nNote: I skipped the {path} part.`;
+    assert.deepEqual(parseReply(reply), { memories: [m], salvaged: false });
+  });
+
+  it("keeps braces inside memory text", () => {
+    const withBraces = { type: "fact", text: "A lone } or { in a path such as /api/{id is kept." };
+    assert.deepEqual(parseReply(JSON.stringify({ memories: [withBraces] })).memories, [withBraces]);
+  });
+
+  it("an empty list is a valid answer", () => {
+    assert.deepEqual(parseReply('{"memories":[]}'), { memories: [], salvaged: false });
+  });
+
+  it("salvages the complete memories of a cut-off reply", () => {
+    const reply = `{"memories":[${JSON.stringify(m)},{"type":"lesson","text":"Half a sen`;
+    assert.deepEqual(parseReply(reply), { memories: [m], salvaged: true });
+  });
+
+  it("salvages a bare list of memories", () => {
+    assert.deepEqual(parseReply(JSON.stringify([m])), { memories: [m], salvaged: true });
+  });
+
+  it("returns null when no memory can be read", () => {
+    for (const reply of ["I cannot help with that.", '{"memories":"none"}', '{"memories":[', "", null]) {
+      assert.equal(parseReply(reply), null, JSON.stringify(reply));
+    }
   });
 });
 

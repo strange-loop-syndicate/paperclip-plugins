@@ -72,16 +72,22 @@ npm test        # unit tests, harness-based
 npm run build   # dist/worker.js + dist/manifest.js
 ```
 
-Install (board action, run by the owner) from the `paperclip-plugins` checkout at
-`/Users/claude/work/paperclip-plugins-repo`. The older `/Users/claude/work/paperclip-plugins/`
-folder holds the pre-move checkout and is not this repo.
+## Install and update
+
+Board action. Only through the release script, from a merged commit (see the root
+[`README.md`](../README.md) → "Install and update"):
 
 ```sh
-cd /Users/claude/work/paperclip/app
-./node_modules/.bin/paperclipai plugin install --local /Users/claude/work/paperclip-plugins-repo/bang-commands
+node scripts/release-install.mjs bang-commands
 ```
 
-Local-path installs are watched: after `npm run build` the host restarts the worker.
+Run it from a fresh worktree or clone at `origin/main` (root `README.md` → "Run it"). Never `git pull` in `/Users/claude/work/paperclip-plugins-repo` to get the script: until every plugin runs from a release copy, a pull there reloads the live plugins.
+
+Never install from a checkout: a build or `git pull` there hot-reloads the worker and
+drops its `issue.comment.created` subscription.
+
+- **Check after a switch:** as a board user, post `!status` on any task. The plugin replies
+  with the status output within a few seconds.
 
 Scaffolded with `@paperclipai/create-paperclip-plugin@2026.1012.0`, then the UI
 template was removed and the SDK switched to the published npm package.
