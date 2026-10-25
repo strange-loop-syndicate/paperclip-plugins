@@ -305,16 +305,23 @@ function stable(value) {
   return JSON.stringify(value);
 }
 
+function realPath(p) {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return path.resolve(p);
+  }
+}
+
 function samePath(a, b) {
   if (!a || !b) return false;
-  const real = (p) => {
-    try {
-      return fs.realpathSync(p);
-    } catch {
-      return path.resolve(p);
-    }
-  };
-  return real(a) === real(b);
+  return realPath(a) === realPath(b);
+}
+
+function isInside(p, root) {
+  if (!p) return false;
+  const rel = path.relative(realPath(root), realPath(p));
+  return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
 }
 
 function writeRecord(dir, name, data) {
@@ -427,6 +434,13 @@ async function install(opts, release) {
   }
   if (results.some((r) => !r.ok)) throw new CheckError("post-install checks failed");
   log(`done: ${pluginKey} ${after.version} runs from ${installPath}`);
+  // The dev watcher belongs to the app's lifecycle manager; the API routes use their own,
+  // so an API install never moves it. It keeps watching the old path until a restart.
+  if (before && !alreadyThere && !isInside(before.packagePath, opts.releasesRoot)) {
+    log(`RESTART NEEDED: the previous path ${before.packagePath} is not a release copy.`);
+    log("  Paperclip's dev watcher still watches it: API installs do not move the watcher.");
+    log("  Restart the Paperclip server once before any build, npm install or git pull there.");
+  }
 }
 
 // ---- main ---------------------------------------------------------------

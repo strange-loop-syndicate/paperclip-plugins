@@ -208,6 +208,7 @@ test("switch: soft uninstall then install from the release copy, all checks pass
   assert.ok(!out.includes(TOKEN), "token is never printed");
   assert.match(out, /ok {3}version: 1\.1\.0/);
   assert.match(out, new RegExp(`undo path: ${OLD_PATH}`));
+  assert.match(out, new RegExp(`RESTART NEEDED: the previous path ${OLD_PATH} is not a release copy`));
   assert.equal(stub.plugin.packagePath, dir);
 });
 
@@ -216,7 +217,17 @@ test("already on this release: checks only, no changes", async () => {
   const { code, out } = await runScript(["fake-plugin"]);
   assert.equal(code, 0, out);
   assert.match(out, /already installed from this release copy/);
+  assert.doesNotMatch(out, /RESTART NEEDED/);
   assert.deepEqual(mutations(), []);
+});
+
+test("release copy to release copy: switches with no restart reminder", async () => {
+  stub.plugin = { ...stub.plugin, version: "1.1.0", packagePath: releaseDir(shas.v11) };
+  const { code, out } = await runScript(["fake-plugin", shas.v1]);
+  assert.equal(code, 0, out);
+  assert.deepEqual(mutations(), ["DELETE /api/plugins/plugin-uuid", "POST /api/plugins/install"]);
+  assert.equal(stub.plugin.packagePath, releaseDir(shas.v1));
+  assert.doesNotMatch(out, /RESTART NEEDED/);
 });
 
 test("an older sha on origin/main installs its own manifest version", async () => {
