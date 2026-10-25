@@ -19,6 +19,7 @@ const GROUPS = [
   ["LLM provider", ["openrouterBaseUrl", "openrouterApiKeyRef"]],
   ["MemOS", ["memosBaseUrl", "captureTimeoutMs"]],
   ["Recall", ["topK", "recallTimeoutMs"]],
+  ["Alerts", ["eventHealthIssue"]],
 ];
 
 describe("settings page: the plugin config form", () => {
@@ -65,13 +66,13 @@ describe("settings page: the plugin config form", () => {
     assert.deepEqual(props.captureProjectIds.default, []);
   });
 
-  it("still has every key a v1 config saved, except the dropped MemOS key", () => {
+  it("still has every key a v1 config saved, except the dropped MemOS key; adds only the alert issue", () => {
     const v1 = [
       "memosBaseUrl", "memosApiKeyRef", "openrouterApiKeyRef", "captureMode", "saveP", "routineP", "jevModel", "extractModel",
       "openrouterBaseUrl", "jevTimeoutMs", "extractTimeoutMs", "recallTimeoutMs", "captureTimeoutMs", "topK",
       "captureComments", "captureRunOutcomes", "captureProjectIds",
     ];
     assert.deepEqual(v1.filter((k) => !(k in props)), ["memosApiKeyRef"]);
-    assert.deepEqual(keys.filter((k) => !v1.includes(k)), []);
+    assert.deepEqual(keys.filter((k) => !v1.includes(k)), ["eventHealthIssue"]);
   });
 });

@@ -54,10 +54,11 @@ This package has two parts. They work independently.
 | MemOS: capture timeout (ms) | `captureTimeoutMs` | `5000` | Timeout for each MemOS write |
 | Recall: max memories (topK) | `topK` | `8` | Maximum number of memories returned |
 | Recall: timeout (ms) | `recallTimeoutMs` | `3000` | Deadline for `memory_recall`, across all scopes |
+| Alerts: deaf plugin issue | `eventHealthIssue` | `SLS-120` | Issue (identifier or ID) that gets one comment when the plugin stops getting events. Empty logs the error only. See "Deaf plugin alert" |
 
 **Plugin config is per company.** `POST /api/plugins/:id/config` needs a `companyId`, and the config applies to that company only. With an empty `captureProjectIds`, every comment in every project of that company goes to Jev, and every comment Jev passes goes to the extractor. Set `captureProjectIds` for a trial. "Capture all projects" is a board decision.
 
-**Capabilities requested:** `events.subscribe`, `agent.tools.register`, `plugin.state.read`, `plugin.state.write`, `issues.read`, `issue.comments.read`, `projects.read`, `secrets.read-ref`, `jobs.schedule`, `api.routes.register`, `instance.settings.register`.
+**Capabilities requested:** `events.subscribe`, `agent.tools.register`, `plugin.state.read`, `plugin.state.write`, `issues.read`, `issue.comments.read`, `issue.comments.create` (the deaf alert only), `projects.read`, `secrets.read-ref`, `jobs.schedule`, `api.routes.register`, `instance.settings.register`.
 
 **Outbound calls use the worker's own `fetch`, not `ctx.http.fetch`.** The host fetch refuses loopback and private addresses, where self-hosted MemOS lives. It also drops the abort signal, so timeouts would not hold. The MemOS and OpenRouter URLs are operator config, not agent input.
 
@@ -173,6 +174,21 @@ Sharing is off by default. The **Memory sharing** page under company settings is
 - **Bad key:** 401, 402 and 403 are not retried inside one call; the item still waits for the job.
 - **Bad answer, not an outage:** when the extractor answers but no memories list can be read, the item gets an `error` verdict with the reason (finish reason and reply length, never the reply text) and is marked done. At temperature 0 a retry gives the same answer.
 
+## Deaf plugin alert
+
+A hot reload can restart the worker without its event subscriptions (SLS-60). The plugin then stays `ready`, logs nothing and captures nothing, while its jobs keep running.
+
+- **Mark:** every delivered comment or run event writes the time to plugin state (`instance` scope, namespace `memos-health`, key `last-event`, one entry per company). A busy worker writes it at most once a minute.
+- **Check:** the `event-health` job runs every minute. A company is deaf when no event came for 10 minutes and an agent or board comment was created after the last event. The comment must be at least 2 minutes old, so an event still on its way does not count. A quiet company with no new comments is never an alert.
+- **Which comments count:** only those created at least 1 minute after the stored mark. A busy worker skips mark writes for up to a minute, so an event in that minute leaves no newer mark. Comments the host writes without an event do not count: those with a `presentation`, and those whose `metadata.authorizationReason` is `internal_agent_write`, `onboarding first-task greeting` or `allow_chat_run_presentation`.
+- **Alert, once per outage:** one `memory plugin is deaf` error in the log and one comment on `eventHealthIssue`, with the last event time and the newest comment. The alert is saved before the comment is posted: if saving fails, nothing is posted. A failed post is retried on the next run.
+- **Recovery:** the next event after the outage logs `memory plugin events are back` and clears the alert. A later outage alerts again.
+- **No auto-repair:** only a board user can disable and enable the plugin (Settings → Plugins → MemOS Memory).
+- **Forced test:** hot-reload the worker, or set the company's entry in `last-event` back by more than 10 minutes. Either gives exactly one comment once a new comment is 2 minutes old.
+- **Wakes no one:** the host never wakes an assignee for a plugin's own comment. The alert waits on the issue until someone reads it.
+- **First install:** a company is checked only after its first event, so a worker that is deaf from the start is not detected.
+- **Missing alert issue:** the warning is logged once per outage. The post is tried again each minute, so the alert still lands if the issue is created later.
+
 ## Failure behaviour
 
 | Failure | Wrapper | Plugin |
@@ -213,6 +229,8 @@ npm test
 - **Resumed sessions repeat memories.** Each resumed heartbeat adds a new block of up to `MEMOS_MAX_BLOCK_CHARS` to the conversation, often with the same memories. To limit the cost, lower `MEMOS_MAX_BLOCK_CHARS`. A later version could track injected hashes per session.
 - **An add counts as stored only with created memory IDs.** MemOS answers `/product/add` with HTTP 200 even when it stores nothing, for example when its embedder fails ("No add/update items prepared"). An answer with no `memory_id` is a failed add: no dedup marker, and the item waits in the retry queue with the reason `memos: MemOS answered with no created memory IDs` (shown in the verdict log and the queue's `lastError`, without memory text). Seen in [SLS-147](/SLS/issues/SLS-147), fixed in [SLS-149](/SLS/issues/SLS-149).
 - **Dedup marker write can fail after the memory is stored.** The memory still counts as stored and a warning is logged. A redelivered event can then store it a second time. MemOS has no write-if-absent call to close this gap.
+- **Decision effects can give a false deaf alert.** A board decision with a `comment_on_issue` effect writes a board comment with no event and no mark that tells it apart. If no other event comes for 10 minutes after one, the plugin alerts.
+- **The deaf check reads up to 25 threads.** Only when no event came for 10 minutes: it lists the company's issues and reads the comments of those with activity after the last event, newest first.
 - **Comment capture reads the whole thread.** The SDK has no single-comment read, so each comment loads all of the issue's comments (5 s limit). On a very long thread the read can time out, and the item waits in the retry queue.
 - **Stdin read error:** the CLI starts with the bytes read so far and no memories, and the wrapper logs a warning.
 - **Issue lookup cost:** the wrapper reads `GET /api/issues/:id` for the project, title and description. This fits in the 3 s budget, but a lighter endpoint would leave more time for MemOS.

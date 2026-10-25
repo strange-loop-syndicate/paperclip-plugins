@@ -10,6 +10,7 @@ import { createCapture, withTimeout } from "./capture.js";
 import { contentHash, normalizeContent } from "./content.js";
 import { createExtractor, EXTRACT_MODEL, EXTRACT_TIMEOUT_MS } from "./extractor.js";
 import { formatMemoryLine } from "./format.js";
+import { alertIssueFrom, createEventHealth, HEALTH_JOB_KEY } from "./health.js";
 import { commentItemKey } from "./item.js";
 import { createJevClient, DEFAULT_ROUTINE_P, DEFAULT_SAVE_P, JEV_MODEL, JEV_TIMEOUT_MS } from "./jev.js";
 import { createMemosClient, recallAcrossScopes, DEFAULT_CAPTURE_TIMEOUT_MS, DEFAULT_RECALL_TIMEOUT_MS, DEFAULT_TOP_K } from "./memos-client.js";
@@ -48,6 +49,7 @@ export function createMemoryPlugin({ fetchImpl = (url, init) => globalThis.fetch
   // write; ctx.state guards redelivery across time and restarts.
   const inflight = new Map();
   const capture = createCapture({ now });
+  const health = createEventHealth({ now });
   // onApiRequest gets no ctx of its own; setup stores it here.
   let hostCtx = null;
 
@@ -341,8 +343,14 @@ export function createMemoryPlugin({ fetchImpl = (url, init) => globalThis.fetch
     multiCompanyConfig: true,
 
     async setup(ctx) {
-      ctx.events.on("agent.run.finished", safe(ctx, "run result", (e) => onRunFinished(ctx, e)));
-      ctx.events.on("issue.comment.created", safe(ctx, "comment", (e) => onCommentCreated(ctx, e)));
+      // Every delivered event marks the company as heard, whatever the
+      // handler then does with it; the event-health job reads the mark.
+      const heard = (fn) => async (e) => {
+        await health.markEvent(ctx, e?.companyId);
+        await fn(e);
+      };
+      ctx.events.on("agent.run.finished", safe(ctx, "run result", heard((e) => onRunFinished(ctx, e))));
+      ctx.events.on("issue.comment.created", safe(ctx, "comment", heard((e) => onCommentCreated(ctx, e))));
 
       ctx.jobs.register(RETRY_JOB_KEY, async () => {
         const configs = new Map();
@@ -352,6 +360,13 @@ export function createMemoryPlugin({ fetchImpl = (url, init) => globalThis.fetch
         };
         const summary = await capture.retryPending(ctx, { configFor, retainFor: retainFor(ctx), deadline: now() + RETRY_JOB_BUDGET_MS });
         if (summary.retried || summary.dropped) ctx.logger.info("memory capture retry job", summary);
+      });
+
+      ctx.jobs.register(HEALTH_JOB_KEY, async () => {
+        const configFor = async (companyId) => ({ alertIssue: alertIssueFrom(await ctx.config.get(companyId)) });
+        const results = await health.check(ctx, { configFor });
+        const notable = Object.entries(results).filter(([, r]) => r !== "ok" && r !== "quiet" && r !== "alerted");
+        if (notable.length) ctx.logger.info("memory event health job", Object.fromEntries(notable));
       });
 
       ctx.data.register("sharing-settings", (params) => sharingSettings(ctx, params));
