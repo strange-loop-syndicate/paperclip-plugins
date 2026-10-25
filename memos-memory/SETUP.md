@@ -22,7 +22,9 @@ This package has two parts. They work independently.
 
 ## 1. Install the plugin
 
-1. Install it as a local-path plugin from the `memos-memory/` folder of a `paperclip-plugins` checkout (`https://github.com/strange-loop-syndicate/paperclip-plugins`), for example `/Users/claude/work/workspace/paperclip-plugins/memos-memory`. The manifest is `src/manifest.js`, the worker `src/worker.js`, the UI `ui/index.js`. Local-path installs are a development workflow. For a deployed setup, publish the package to npm and install it from there.
+1. Install or update it only through the release script, from a merged commit: `node scripts/release-install.mjs memos-memory` (add `--allow-new` on a first install). Run it from a fresh worktree or clone at `origin/main` (root `README.md` → "Run it"). Never `git pull` in `/Users/claude/work/paperclip-plugins-repo` to get the script: until every plugin runs from a release copy, a pull there reloads the live plugins. See the root [`README.md`](../README.md) → "Install and update". The script installs from a read-only release copy. Never install from a checkout: a write there hot-reloads the worker and drops its event subscriptions, so capture stops with no error. The manifest is `src/manifest.js`, the worker `src/worker.js`, the UI `ui/index.js`.
+   - **Check after an update:** post a test comment on a task in a captured project. Within about 1 minute, the `shadow-log` route has an entry with that `commentId`.
+   - **The recall wrapper is separate.** The adapter `command` path (sections 2 and 3) is not a plugin install, and Paperclip does not watch it.
 2. Bind the OpenRouter key to the plugin in each company that uses it:
    1. In the company's plugin settings, find the **OpenRouter API key** field (`openrouterApiKeyRef`). It is a secret picker, not a text box.
    2. Pick the company secret that holds the key, or use **Create & bind** to make one. Leave the version at `latest` unless you must pin one.
