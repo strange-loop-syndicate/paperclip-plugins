@@ -31,7 +31,9 @@ node scripts/release-install.mjs memos-memory             # switch to the tip of
 node scripts/release-install.mjs memos-memory 1b0189a     # or to a given merged commit
 ```
 
-- **✋ First switch (Paperclip task SLS-143):** run the script from a fresh worktree or clone at `origin/main`, as above. Never `git pull` in `/Users/claude/work/paperclip-plugins-repo` for it: that checkout has no `scripts/` yet, and a pull reloads all four live plugins and drops their subscriptions. `git fetch` and `git worktree add` write only under `.git/`, which Paperclip does not watch. After all four plugins run from release copies, any checkout is safe.
+- **✋ First switch (Paperclip task SLS-143):** run the script from a fresh worktree or clone at `origin/main`, as above. Never `git pull` in `/Users/claude/work/paperclip-plugins-repo` for it: that checkout has no `scripts/` yet, and a pull reloads all four live plugins and drops their subscriptions. `git fetch` and `git worktree add` write only under `.git/`, which Paperclip does not watch.
+- **✋ Restart once after the first switch:** after a plugin's first switch from a checkout path to a release copy, restart the Paperclip server once. Do it before any build, `npm install` or `git pull` in that checkout. **Why:** API installs do not move the dev watcher, so it keeps watching the old checkout path until a restart (proof: SLS-143, 2026-10-25). The script prints `RESTART NEEDED` when the previous path was not under the releases folder.
+- **Later switches:** a switch from one release copy to another needs no restart. The old watch then points at a read-only copy that nothing writes.
 - **Source:** a commit on `origin/main`, default its tip. The script runs `git fetch` and refuses a sha that is not on `origin/main`. It never reads the working tree, so any checkout of this repo works.
 - **Release copy:** `git archive` of `<sha>:<plugin>`, then `npm ci` and the plugin's checks (`npm run check`, or `typecheck`, `build` and `test` where there is no `check`). It builds in a `.tmp-*` folder, makes it read-only, then renames it into place. An existing complete copy (with `.release.json`) is reused. The build log is `.release-build.log` in the copy.
 - **Switch:** soft uninstall (`DELETE /api/plugins/<id>`, no purge), then `POST /api/plugins/install` with the release path. `install` answers 409 for a plugin that is still installed. The soft uninstall keeps the plugin row, so the ID, config and plugin state stay. `install` then runs `lifecycle.load` → `activateReadyPlugin`, the same full activation that `enable` runs.
@@ -49,7 +51,7 @@ node scripts/release-install.mjs memos-memory 1b0189a     # or to a given merged
 
 ### Check that a plugin gets events after a switch
 
-Run the check for the plugin you switched. Also check the server log: from the switch on, a `git pull` or a test run in this checkout must give no `plugin-dev-watcher: file change detected` line for any plugin.
+Run the check for the plugin you switched. Also check the server log: after the restart that follows the first switch, a `git pull` or a test run in this checkout must give no `plugin-dev-watcher: file change detected` line for any plugin. Before that restart, it still does.
 
 | Plugin | How to prove it works |
 |---|---|
