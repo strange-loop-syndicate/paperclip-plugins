@@ -149,7 +149,7 @@ Sharing is off by default. The **Memory sharing** page under company settings is
 | **Jev gate** | One call to `typesafe/jev-1.13`. Questions: has a decision / lesson / outcome / durable fact, and "routine status only". The item passes if a content question is ≥ `saveP` and routine is < `routineP`. Jev never writes text |
 | **Extraction** | One Haiku call per passed item: "extract the decisions, lessons, outcomes and facts, one short sentence each, drop routine status". At most 3 memories, 300 characters each, each with its own type. An empty list saves nothing. A reply cut off at `max_tokens` or with invalid JSON keeps its complete memory objects (`salvaged: true`). A reply with no usable list is an `error` verdict, not a retry |
 | **Save** | In `save` mode, each memory is a sync `fast` add with our IDs. Raw comment text is never stored |
-| **Shadow** | In `shadow` mode (the default), verdicts and extracted memories are logged and nothing is stored |
+| **Shadow** | In `shadow` mode (the default), verdicts and extracted memories are logged and nothing is stored. `save` mode logs the verdicts too, see below |
 
 - **Metadata on every memory:** `companyId`, `projectId`, `issueId`, `issueIdentifier`, `commentId`, `runId`, `agentId` or `userId`, `authorType`, `kind` (the memory's type), `jevType`, `jevP`, `itemKey`, `contentHash`, `source`.
 - **No blind run note.** v1 stored one note for every succeeded run, and extracted labelled lines with a regex. Both are gone.
@@ -157,9 +157,11 @@ Sharing is off by default. The **Memory sharing** page under company settings is
 - **Dedup:** sha256 of the normalized memory text (NFKC, lower case, paired markdown emphasis removed, collapsed spaces, no trailing punctuation), per company + project scope (namespace `memos-dedup`). Items are also marked done (namespace `memos-items`), so a redelivered event makes no second Jev call. In-process locks cover concurrent redelivery.
 - **Why the plugin extracts, not MemOS:** see [`docs/sls-99-step1-fine-add.md`](docs/sls-99-step1-fine-add.md).
 
-## Shadow log and report
+## Verdict log and report
 
-- **Where:** plugin state, one key per company and UTC day (namespace `memos-shadow`), at most 2000 entries a day. Each entry holds IDs (including the `projectId` a save would write to), the verdict, Jev probabilities, the extracted memories and the cost of both calls. It holds no comment text.
+- **Where:** plugin state, one key per company and UTC day (namespace `memos-shadow`), at most 2000 entries a day, in both modes. Each entry holds `mode`, IDs (including the `projectId` a save writes to), the verdict, Jev probabilities and the cost of both calls. It holds no comment text.
+- **Memories:** a `shadow` entry holds the extracted memories. A `save` entry holds only their types (`memoryTypes`) and the add results (`stored`), because the memories are in MemOS, where recall applies sharing.
+- **Retries:** a save that fails is logged, then retried, so one item can have several entries. Count the last entry per `key`.
 - **Read it:** `GET /api/plugins/sls.memos-memory/api/shadow-log?companyId=<id>&date=YYYY-MM-DD` as a board user or an agent of that company. The answer also lists the items waiting for a retry.
 - **Server log:** every verdict is also logged as `memory capture verdict`, in both modes.
 
@@ -205,7 +207,7 @@ npm test
 - **Jev and the extractor see comment text.** It goes to OpenRouter (Jev and Haiku). Code blocks and `<details>` are cut first; other secrets pasted in prose are not.
 - **The run result is a comment.** The SDK gives plugins no read of a run's own result, so the run event uses the run's newest agent comment.
 - **`memory_retain` is not gated.** It stores what the agent wrote, in both modes. It is an explicit call, not capture.
-- **The shadow log ignores sharing.** Any agent of the company can read the extracted memories of every project through `shadow-log`. It stays open to agents because an agent writes the shadow report. Limit it to `board` once saving is on.
+- **The shadow log ignores sharing.** In `shadow` mode, any agent of the company can read the extracted memories of every project through `shadow-log`. It stays open to agents because an agent writes the report. In `save` mode the log holds no memory text.
 - **Archived projects leave sharing.** When the page saves, shares of an archived project are dropped with a log line. Unarchiving the project later does not bring them back. Set them again on the page.
 - **Double signals outside Paperclip.** Started by a non-job-control `sh -c` under a terminal, the wrapper is not group leader but shares the group with the CLI. Ctrl-C then reaches the CLI twice, and Claude treats that as "exit now". Paperclip spawns the wrapper as group leader, so this does not happen there.
 - **Resumed sessions repeat memories.** Each resumed heartbeat adds a new block of up to `MEMOS_MAX_BLOCK_CHARS` to the conversation, often with the same memories. To limit the cost, lower `MEMOS_MAX_BLOCK_CHARS`. A later version could track injected hashes per session.
