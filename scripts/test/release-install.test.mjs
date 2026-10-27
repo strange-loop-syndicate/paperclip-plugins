@@ -132,6 +132,19 @@ function runScript(args, env = {}) {
 }
 
 const releaseDir = (sha) => path.join(work, "releases", "fake-plugin", sha);
+const currentLink = () => path.join(work, "releases", "fake-plugin", "current");
+const readCurrent = () => {
+  try {
+    return fs.readlinkSync(currentLink());
+  } catch (err) {
+    if (err.code === "ENOENT") return null;
+    throw err;
+  }
+};
+const setCurrent = (sha) => {
+  fs.rmSync(currentLink(), { force: true });
+  if (sha) fs.symlinkSync(sha, currentLink());
+};
 const mutations = () => stub.requests.filter((r) => r.method !== "GET").map((r) => `${r.method} ${r.path}`);
 
 before(async () => {
@@ -195,6 +208,8 @@ test("dry run builds a read-only copy of the committed tree and calls no API", a
   assert.equal(fs.statSync(path.join(dir, "dist", "worker.js")).mode & 0o222, 0, "files are read-only");
   assert.match(fs.readFileSync(path.join(dir, ".release-build.log"), "utf8"), /\$ npm run build/);
   assert.deepEqual(fs.readdirSync(path.dirname(dir)).filter((n) => n.startsWith(".tmp-")), [], "no temp folder left");
+  assert.match(out, new RegExp(`5\\. if all checks pass: point ${currentLink()} at ${shas.v11}`));
+  assert.equal(readCurrent(), null, "dry run makes no current link");
 });
 
 test("switch: soft uninstall then install from the release copy, all checks pass", async () => {
@@ -210,6 +225,9 @@ test("switch: soft uninstall then install from the release copy, all checks pass
   assert.match(out, new RegExp(`undo path: ${OLD_PATH}`));
   assert.match(out, new RegExp(`RESTART NEEDED: the previous path ${OLD_PATH} is not a release copy`));
   assert.equal(stub.plugin.packagePath, dir);
+  assert.equal(readCurrent(), shas.v11, "current is a relative link to the sha");
+  assert.equal(fs.realpathSync(currentLink()), dir);
+  assert.match(out, new RegExp(`current: ${currentLink()} -> ${shas.v11} \\(was none\\)`));
 });
 
 test("already on this release: checks only, no changes", async () => {
@@ -219,15 +237,43 @@ test("already on this release: checks only, no changes", async () => {
   assert.match(out, /already installed from this release copy/);
   assert.doesNotMatch(out, /RESTART NEEDED/);
   assert.deepEqual(mutations(), []);
+  assert.match(out, /current: .* \(unchanged\)/);
 });
 
-test("release copy to release copy: switches with no restart reminder", async () => {
+test("already on this release with no current link: the run adds the link", async () => {
+  setCurrent(null);
+  stub.plugin = { ...stub.plugin, version: "1.1.0", packagePath: releaseDir(shas.v11) };
+  const { code, out } = await runScript(["fake-plugin"]);
+  assert.equal(code, 0, out);
+  assert.deepEqual(mutations(), []);
+  assert.equal(readCurrent(), shas.v11);
+});
+
+test("release copy to release copy: switches with no restart reminder, current follows", async () => {
+  setCurrent(shas.v11);
   stub.plugin = { ...stub.plugin, version: "1.1.0", packagePath: releaseDir(shas.v11) };
   const { code, out } = await runScript(["fake-plugin", shas.v1]);
   assert.equal(code, 0, out);
   assert.deepEqual(mutations(), ["DELETE /api/plugins/plugin-uuid", "POST /api/plugins/install"]);
   assert.equal(stub.plugin.packagePath, releaseDir(shas.v1));
   assert.doesNotMatch(out, /RESTART NEEDED/);
+  assert.equal(readCurrent(), shas.v1);
+  assert.match(out, new RegExp(`\\(was ${shas.v11}\\)`));
+  assert.deepEqual(fs.readdirSync(path.dirname(currentLink())).filter((n) => n.startsWith(".current-")), [], "no temp link left");
+});
+
+test("a current path that is not a symlink is never replaced", async () => {
+  setCurrent(null);
+  fs.mkdirSync(currentLink());
+  try {
+    stub.plugin = { ...stub.plugin, version: "1.1.0", packagePath: releaseDir(shas.v11) };
+    const { code, out } = await runScript(["fake-plugin"]);
+    assert.equal(code, 1, out);
+    assert.match(out, /installed, but the current link was not moved: .* is not a symlink/);
+    assert.ok(fs.lstatSync(currentLink()).isDirectory());
+  } finally {
+    fs.rmdirSync(currentLink());
+  }
 });
 
 test("an older sha on origin/main installs its own manifest version", async () => {
@@ -261,12 +307,14 @@ test("refuses an unknown plugin folder", async () => {
   assert.match(out, /no plugin folder no-such-plugin\//);
 });
 
-test("config change after install fails the run", async () => {
+test("config change after install fails the run and leaves current alone", async () => {
+  setCurrent(shas.v1);
   stub.mode = "drop-config";
   const { code, out } = await runScript(["fake-plugin"]);
   assert.equal(code, 1, out);
   assert.match(out, new RegExp(`FAIL config ${COMPANY}`));
-  assert.match(out, /post-install checks failed/);
+  assert.match(out, /post-install checks failed; current link not moved/);
+  assert.equal(readCurrent(), shas.v1);
 });
 
 test("version mismatch after install fails the run", async () => {
@@ -277,9 +325,11 @@ test("version mismatch after install fails the run", async () => {
 });
 
 test("failed install rolls back to the previous folder", async () => {
+  setCurrent(shas.v1);
   stub.mode = "install-fails";
   const { code, out } = await runScript(["fake-plugin"]);
   assert.equal(code, 1, out);
+  assert.equal(readCurrent(), shas.v1, "current is not moved by a failed install");
   const installs = stub.requests.filter((r) => r.method === "POST").map((r) => r.body.packageName);
   assert.deepEqual(installs, [releaseDir(shas.v11), OLD_PATH]);
   assert.deepEqual(mutations(), ["DELETE /api/plugins/plugin-uuid", "POST /api/plugins/install", "POST /api/plugins/install"]);

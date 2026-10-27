@@ -24,7 +24,7 @@ This package has two parts. They work independently.
 
 1. Install or update it only through the release script, from a merged commit: `node scripts/release-install.mjs memos-memory` (add `--allow-new` on a first install). Run it from a fresh worktree or clone at `origin/main` (root `README.md` → "Run it"). Never `git pull` in `/Users/claude/work/paperclip-plugins-repo` to get the script: until every plugin runs from a release copy, a pull there reloads the live plugins. See the root [`README.md`](../README.md) → "Install and update". The script installs from a read-only release copy. Never install from a checkout: a write there hot-reloads the worker and drops its event subscriptions, so capture stops with no error. The manifest is `src/manifest.js`, the worker `src/worker.js`, the UI `ui/index.js`.
    - **Check after an update:** post a test comment on a task in a captured project. Within about 1 minute, the `shadow-log` route has an entry with that `commentId`.
-   - **The recall wrapper is separate.** The adapter `command` path (sections 2 and 3) is not a plugin install, and Paperclip does not watch it.
+   - **The recall wrapper is separate.** The adapter `command` path (sections 2 and 3) is not a plugin install, and Paperclip does not watch it. It goes through the `memos-memory/current` link, which the script moves to each new release.
 2. Bind the LLM key to the plugin in each company that uses it:
    1. In the company's plugin settings, find the **LLM provider: OpenAI key** field (`openrouterApiKeyRef`). It is a secret picker, not a text box.
    2. Pick the company secret that holds the key, or use **Create & bind** to make one. Leave the version at `latest` unless you must pin one.
@@ -69,14 +69,15 @@ Apply this in the E2E task, not here.
 ```json
 {
   "engine": "cli",
-  "command": "/Users/claude/work/workspace/paperclip-plugins/memos-memory/bin/claude/claude",
+  "command": "/Users/claude/work/paperclip-plugins-releases/memos-memory/current/bin/claude/claude",
   "env": {
     "MEMOS_BASE_URL": "http://127.0.0.1:8001",
-    "MEMOS_REAL_COMMAND": "/opt/homebrew/bin/claude"
+    "MEMOS_REAL_COMMAND": "/Users/claude/.local/bin/claude"
   }
 }
 ```
 
+- **Use the `current` path.** `release-install.mjs` points `memos-memory/current` at the release Paperclip runs, so the `command` stays valid after each plugin update. Never point it at a checkout or a worktree.
 - **Set `engine: "cli"`.** New agents default to the ACP engine. ACP starts `claude-agent-acp` and ignores `command`, so the wrapper never runs and nothing is recalled. This applies to Codex (`codex-acp`) too.
 - **Keep the file name `claude`.** The adapter compares the command's base name with `claude` before it probes the CLI version and `--effort` support.
 - **Placement:** the memory block goes in front of the stdin prompt, for fresh and resumed sessions. The adapter's args and its `--append-system-prompt-file` are not changed. See [Why the user prompt](#why-the-user-prompt-not-the-system-prompt).
@@ -86,7 +87,7 @@ Apply this in the E2E task, not here.
 ```json
 {
   "engine": "cli",
-  "command": "/Users/claude/work/workspace/paperclip-plugins/memos-memory/bin/codex/codex",
+  "command": "/Users/claude/work/paperclip-plugins-releases/memos-memory/current/bin/codex/codex",
   "env": {
     "MEMOS_BASE_URL": "http://127.0.0.1:8001",
     "MEMOS_REAL_COMMAND": "/opt/homebrew/bin/codex"

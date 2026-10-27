@@ -18,6 +18,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const DEFAULT_RELEASES_ROOT = "/Users/claude/work/paperclip-plugins-releases";
 const DEFAULT_API_BASE = "http://127.0.0.1:3100";
 const MARKER = ".release.json";
+const CURRENT = "current";
 const API_TIMEOUT_MS = 180_000;
 
 // Plugins that write into their own package folder at runtime keep a writable copy.
@@ -229,6 +230,32 @@ function ensureRelease(repo, opts, sha) {
   }
 }
 
+// <releasesRoot>/<plugin>/current -> <sha>: a stable path to the release Paperclip runs,
+// for callers outside Paperclip (the memos-memory recall wrapper is an adapter `command`).
+// Moved only after every post-install check passes. The relative target and the rename
+// over the old link mean a reader sees either the old or the new release, never none.
+function pointCurrent(releasesRoot, plugin, sha) {
+  const dir = path.join(releasesRoot, plugin);
+  const link = path.join(dir, CURRENT);
+  let previous = null;
+  try {
+    if (!fs.lstatSync(link).isSymbolicLink()) throw new CheckError(`${link} exists and is not a symlink; fix it by hand`);
+    previous = fs.readlinkSync(link);
+  } catch (err) {
+    if (err.code !== "ENOENT") throw err;
+  }
+  if (previous === sha) return { link, previous, changed: false };
+  const tmp = path.join(dir, `.${CURRENT}-${process.pid}-${Date.now()}`);
+  fs.symlinkSync(sha, tmp);
+  try {
+    fs.renameSync(tmp, link);
+  } catch (err) {
+    fs.rmSync(tmp, { force: true });
+    throw err;
+  }
+  return { link, previous, changed: true };
+}
+
 // ---- Paperclip API ------------------------------------------------------
 
 function resolveToken(apiBase) {
@@ -432,7 +459,14 @@ async function install(opts, release) {
       log("  (or, if that is a release folder: run this script with its sha)");
     }
   }
-  if (results.some((r) => !r.ok)) throw new CheckError("post-install checks failed");
+  if (results.some((r) => !r.ok)) throw new CheckError(`post-install checks failed; ${CURRENT} link not moved`);
+  let current;
+  try {
+    current = pointCurrent(opts.releasesRoot, opts.plugin, marker.sha);
+  } catch (err) {
+    throw new CheckError(`installed, but the ${CURRENT} link was not moved: ${err.message}`);
+  }
+  log(current.changed ? `${CURRENT}: ${current.link} -> ${marker.sha} (was ${current.previous ?? "none"})` : `${CURRENT}: ${current.link} -> ${marker.sha} (unchanged)`);
   log(`done: ${pluginKey} ${after.version} runs from ${installPath}`);
   // The dev watcher belongs to the app's lifecycle manager; the API routes use their own,
   // so an API install never moves it. It keeps watching the old path until a restart.
@@ -459,6 +493,7 @@ async function main() {
     log("  2. DELETE /api/plugins/<id> (soft uninstall, keeps ID and config)");
     log(`  3. POST /api/plugins/install {"packageName": ${JSON.stringify(fs.realpathSync(release.releaseDir))}, "isLocalPath": true}`);
     log(`  4. check: status ready, same id, version ${release.marker.manifest.version}, packagePath = release copy, config unchanged`);
+    log(`  5. if all checks pass: point ${path.join(opts.releasesRoot, opts.plugin, CURRENT)} at ${release.marker.sha}`);
     return;
   }
   await install(opts, release);
