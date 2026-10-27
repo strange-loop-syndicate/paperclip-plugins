@@ -34,7 +34,7 @@ const RULES = [
 // - a company role next to a process word ("the Project Director merges");
 // - a card next to a task status, unless the memory is about Paperclip itself.
 // Role names are matched by case, and removed before the process words are,
-// so "Code Reviewer" alone is not "review".
+// so the role "approver" alone is not "approval".
 const ROLE = /\b(?:(?:Project )?Directors?|Project Leads?|Code Reviewers?|Architects?|Engineers?|DevOps|Experiment Owners?|task creators?|approvers?)\b/g;
 const PROCESS_WORD = /\b(?:merges?|merged|merging|reviews?|reviewed|reviewing|approv\w*|accept\w*|sign[- ]?offs?|cards?|escalat\w*|clos(?:e|es|ed|ing)|chain of command)\b/i;
 const CARD = /\bcards?\b/i;

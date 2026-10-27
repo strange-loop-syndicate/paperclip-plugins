@@ -319,6 +319,7 @@ describe("noise check: company process rules are not memories (SLS-208)", () => 
       "Agent API keys get 403 when they set an agent's command or env; a board user sets them on the Approvals page.",
       "In Paperclip upgrades, the Project Director runs offline-upgrade.sh, which stops the server and every agent run.",
       "On a task with a review stage, setting in_review sends half-done work to the reviewer.",
+      "Paperclip leaves the assignee out when it picks an approver for a stage.",
       "The usage-limits plugin keeps the last good reading when the usage API answers 429.",
     ]) {
       assert.equal(noiseReason(text, { taskPrefix: "SLS" }), null, text);
