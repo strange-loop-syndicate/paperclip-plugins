@@ -12,6 +12,7 @@
 - **Not MemOS.** A probe add of `/Users/claude/work/memos-runtime … Oleg` to the probe company cube came back unchanged. MemOS 2.0.33 has no personal-data filter in its code.
 - **The OpenRouter extract call.** The 2026-10-24 shadow log holds the extractor's answer before any MemOS call, and it already shows `/Users/[PERSON_NAME]/`. It also turned the name `Oleg` into `[PERSON_NAME]`.
 - **Fix:** placeholders around the call. Names are not paths, so `protectTerms` lets an operator protect a user name too. A memory that still holds a redaction label is dropped (`redacted`).
+- **Deploy setting:** set `protectTerms` to at least `["Oleg"]`. Without it, a memory that names him comes back as `[PERSON_NAME]` and is dropped.
 
 ## Duplicate threshold: 0.85, not 0.88
 - **On the Ops cube (666 memories), the same fact in other words scored 0.83–0.88.** Examples: the "agents never set `done`" rule at 0.834, the MemOS fine-search result at 0.857, the checkout rule at 0.869.
@@ -31,6 +32,7 @@ The script reads MemOS and writes files. It deletes nothing.
 2. `node e2e/replay-window.mjs batches <logDir> <fromIso> <toIso> batches`
 3. POST each batch to the dry-run route (no `dupCheck`). Save the answers as `results/result-NNN.json`.
 4. `node e2e/replay-window.mjs dedup http://127.0.0.1:8001 results dedup.json`: the duplicate check in comment order, on a new probe-company cube. No real cube is touched.
+   - **This writes to MemOS:** the cube `paperclip-e2e-probe-company-sls200-replay-<ms>` stays after the run. Its name is in `dedup.json` (`scope`) and goes in the step 5 report.
 5. `node e2e/replay-window.mjs report results dedup.json report.md`: counts and a seeded sample of 30 to grade.
 
 <details>
@@ -42,11 +44,12 @@ The script reads MemOS and writes files. It deletes nothing.
 |---|---|---|
 | Durable (30) | 3 | 9 |
 | Task log (25) | 11 | 21 |
-| Stale (15) | 13 | 14 |
+| Stale (15) | 9 | 14 |
 
 - The task-ID rule costs 6 durable memories here because the old extractor named the task in almost every memory. The new prompt does not send the task ID, so it applies to new captures only. The clean-up re-judge runs without it.
 - Durable memories the check drops: two name a release commit for a rollback, one names a PR number.
+- **Rules kept narrow on purpose.** "still", "currently" and "not yet" count only next to a status word. Outcomes count only in the past or perfect tense. "A PR is merged only by …" and "… still passes" are rules and lessons, so the check must not drop them. The extractor prompt carries the rest of the stale cases.
 
-**Clean-up, code check only** (no LLM; a floor, before the deploy): 811 memories → 488 keep, 308 delete, 15 merge.
+**Clean-up, code check only** (no LLM; a floor, before the deploy): 811 memories → 529 keep, 265 delete, 17 merge. 20 of the deletes are `redacted`: a name became `[PERSON_NAME]`, which `--path-user` cannot restore.
 
 </details>

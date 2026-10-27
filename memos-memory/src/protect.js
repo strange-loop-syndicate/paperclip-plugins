@@ -58,5 +58,8 @@ export function restoreSpans(text, spans) {
   return String(text ?? "").replace(TOKEN, (m, n) => spans[Number(n) - 1] ?? m);
 }
 
+/** A placeholder left in a memory: one `restoreSpans` did not know. */
+export const PLACEHOLDER = /\{\{P\d+\}\}/;
+
 /** A redaction label some provider wrote in place of a name or address. */
 export const REDACTION_LABEL = /\[(?:PERSON_NAME|PERSON|NAME|IP_ADDRESS|ADDRESS|EMAIL(?:_ADDRESS)?|PHONE(?:_NUMBER)?|LOCATION|URL)\]/;

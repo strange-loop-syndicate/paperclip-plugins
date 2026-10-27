@@ -12,7 +12,7 @@ import { decideGate } from "./jev.js";
 import { contentHash } from "./content.js";
 import { hasProse, itemText, sourceLabel } from "./item.js";
 import { noiseReason, taskPrefixOf } from "./noise.js";
-import { REDACTION_LABEL } from "./protect.js";
+import { PLACEHOLDER, REDACTION_LABEL } from "./protect.js";
 import { UNSCOPED_PROJECT, scopeFor } from "./scope.js";
 
 export const PENDING_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -69,8 +69,8 @@ function withoutMemoryText(entry) {
 
 /**
  * Split extracted memories into kept and dropped. Dropped: a task log or task
- * status (src/noise.js), a redaction label left by the provider, or a second
- * copy of a memory in the same item. `taskPrefix` drops memories that name a
+ * status (src/noise.js), a redaction label left by the provider, a placeholder
+ * the model invented, or a second copy of a memory in the same item. `taskPrefix` drops memories that name a
  * task of this company.
  */
 export function screenMemories(memories, { taskPrefix = null } = {}) {
@@ -79,7 +79,11 @@ export function screenMemories(memories, { taskPrefix = null } = {}) {
   const seen = new Set();
   for (const m of memories) {
     const hash = contentHash(m.content);
-    const reason = noiseReason(m.content, { taskPrefix }) ?? (REDACTION_LABEL.test(m.content) ? "redacted" : null) ?? (seen.has(hash) ? "repeat" : null);
+    const reason =
+      noiseReason(m.content, { taskPrefix }) ??
+      (REDACTION_LABEL.test(m.content) ? "redacted" : null) ??
+      (PLACEHOLDER.test(m.content) ? "placeholder" : null) ??
+      (seen.has(hash) ? "repeat" : null);
     seen.add(hash);
     if (reason) dropped.push({ ...m, reason });
     else kept.push(m);

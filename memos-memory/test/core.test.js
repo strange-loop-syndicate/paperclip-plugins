@@ -210,6 +210,8 @@ describe("noise check: task logs and task status are not memories (SLS-200)", ()
     ["task-status", "The upgrade stays blocked until the server restart finishes."],
     ["task-status", "The review card is still pending with the board."],
     ["task-status", "The fix is in_review with the Code Reviewer."],
+    ["task-status", "The plugin release is currently on hold for the server restart."],
+    ["task-status", "The patch is not yet merged into the host."],
     ["task-outcome", "The release-copy loader was merged to main after review."],
     ["task-outcome", "The context layer spec passed review on the third revision."],
   ];
@@ -226,6 +228,14 @@ describe("noise check: task logs and task status are not memories (SLS-200)", ()
       "Plugins load from /Users/claude/work/paperclip-plugins-releases/<plugin>/current.",
       "Comment bodies reach the plugin as UTF-8 Markdown source.",
       "Do not run npm install for Paperclip while the server is running.",
+      // Rules in the present tense and lessons with "still" (SLS-200 review).
+      "A task is closed only by its creator; the assignee never sets done.",
+      "A PR is merged only by the Project Director or the Project Lead, with --match-head-commit.",
+      "Every engineer PR is reviewed by Code Reviewer before merge.",
+      "Chrome 111+ refuses the CDP WebSocket without --remote-allow-origins, while /json/version still passes.",
+      "After a plugin update, check that the plugin still receives events.",
+      "The Tailscale range 100.64.0.0/10 must stay open for the lab hosts.",
+      "Backups older than 2026/10/27 use the old layout.",
     ]) {
       assert.equal(noiseReason(text, { taskPrefix: "SLS" }), null, text);
     }
@@ -254,6 +264,12 @@ describe("noise check: task logs and task status are not memories (SLS-200)", ()
     ]);
     assert.deepEqual(kept, [lesson]);
     assert.deepEqual(dropped.map((d) => d.reason), ["repeat", "task-outcome", "redacted"]);
+  });
+
+  it("screenMemories drops a memory that still holds a placeholder the model invented", () => {
+    const { kept, dropped } = screenMemories([{ type: "fact", content: "The release copy lives under {{P9}} on the lab host." }]);
+    assert.deepEqual(kept, []);
+    assert.deepEqual(dropped.map((d) => d.reason), ["placeholder"]);
   });
 });
 

@@ -9,18 +9,21 @@ const RULES = [
   ["commit-hash", /\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b/],
   ["pr-number", /\b(?:PR|pull request)\s*#?\d+/i],
   // Test and check counts: "26/26", "39 tests pass", "7 mutations caught", "exited 0".
-  ["test-count", /\b\d+\s*\/\s*\d+\s*(?:tests?|checks?|mutations?|files?|pass|passed|passing|applied|caught|fail(?:ed)?)?\b(?!\s*(?:s|ms|min|h|%))/i],
+  // Not a CIDR range (100.64.0.0/10) or a date (2026/10/27).
+  ["test-count", /(?<![\d./])\d+\s*\/\s*\d+(?!\d|\/|\.\d)(?!\s*(?:s|ms|min|h|%)\b)/],
   ["test-count", /\b\d+\s+(?:tests?|mutations?|checks?)\s+(?:pass|passed|passing|caught|fail|failed|green)\b/i],
   ["exit-code", /\b(?:exited|exit code|rc)\s*[:=]?\s*\d+\b/i],
-  // Task state that goes stale: blocked, waiting, pending, still, not yet.
+  // Task state that goes stale: blocked, waiting, pending. "still", "currently"
+  // and "not yet" count only with a status word: "X still passes" is a lesson.
   [
     "task-status",
-    /\b(?:still|not yet|so far|right now|currently|for now|meanwhile|stays? (?:blocked|open|pending|off)|(?:is|are) (?:now )?(?:blocked|pending|todo|in_review|in_progress)|remains? (?:blocked|open|pending)|pending (?:on|with|until)|waits? (?:on|for)|waiting (?:on|for)|awaits?|is now (?:in|on|at)|no change since|has not (?:yet )?been)\b/i,
+    /\b(?:(?:still|currently) (?:blocked|pending|open|waiting|running|in review|in_review|in progress|in_progress|todo|on hold|unmerged|unanswered|undecided|not (?:merged|deployed|done|fixed|decided|answered|approved|reviewed|started))|not yet (?:merged|deployed|done|fixed|decided|answered|approved|reviewed|started|run)|stays (?:blocked|open|pending|off)|(?:is|are) (?:now )?(?:blocked|pending|todo|in_review|in_progress)|remains (?:blocked|open|pending)|pending (?:on|with|until)|waits? (?:on|for)|waiting (?:on|for)|awaits?|is now (?:in|on|at)|no change since|has not (?:yet )?been)\b/i,
   ],
   // Per-task outcomes: something was merged, deployed, accepted or closed.
+  // Past and perfect tense only: "a PR is merged only by …" is a rule.
   [
     "task-outcome",
-    /\b(?:was|were|is|has been|have been|got)\s+(?:merged|deployed|accepted|approved|closed|reviewed|released|shipped|reverted|cancelled|canceled|posted|filed|opened)\b|\b(?:passed|failed) (?:review|code review)\b|\bmerged (?:as|to main|into main)\b/i,
+    /\b(?:was|were|has been|have been|got)\s+(?:merged|deployed|accepted|approved|closed|reviewed|released|shipped|reverted|cancelled|canceled|posted|filed|opened)\b|\b(?:passed|failed) (?:review|code review)\b|\bmerged (?:as|to main|into main)\b/i,
   ],
 ];
 
