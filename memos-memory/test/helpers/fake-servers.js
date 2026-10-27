@@ -11,6 +11,10 @@ export async function startFakeServer({ issues = {} } = {}) {
     // ok | empty (200 with no created memories, as when the MemOS embedder fails)
     addMode: "ok",
     issueMode: "ok", // ok | hang (Paperclip issue lookup never answers)
+    searchMode: "ok", // ok | error500 (search only; add still works)
+    // Search relativity of a stored memory for a query. Default: 1 for the
+    // same text, else 0.3 (MemOS answers a cosine).
+    similarity: null,
     delayMs: 0,
     issues: { ...issues },
     store: [], // { userId, cubeId, content, info }
@@ -87,11 +91,14 @@ export async function startFakeServer({ issues = {} } = {}) {
         return send(200, { code: 200, message: "Memory added successfully", data: [{ memory: b.memory_content, memory_id: memoryId, memory_type: "UserMemory", cube_id: b.mem_cube_id }] });
       }
       if (req.url === "/product/search") {
+        if (state.searchMode === "error500") return send(500, { error: "boom" });
         const b = entry.body;
+        const sim = state.similarity ?? ((query, content) => (query.trim().toLowerCase() === content.trim().toLowerCase() ? 1 : 0.3));
         const memories = state.store
           .filter((m) => m.userId === b.user_id && m.cubeId === b.mem_cube_id)
-          .slice(0, b.top_k ?? 10)
-          .map((m) => ({ memory: m.content, metadata: m.rawMetadata ?? m.info }));
+          .map((m) => ({ memory: m.content, metadata: { ...(m.rawMetadata ?? m.info), relativity: sim(b.query, m.content) } }))
+          .sort((x, y) => y.metadata.relativity - x.metadata.relativity)
+          .slice(0, b.top_k ?? 10);
         return send(200, { code: 200, message: "ok", data: { text_mem: [{ cube_id: b.mem_cube_id, memories }] } });
       }
       send(404, { error: "unknown path" });

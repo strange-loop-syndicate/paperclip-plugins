@@ -14,8 +14,8 @@ const autoLabel = (key) =>
 
 const GROUPS = [
   ["Capture", ["captureMode", "captureProjectIds", "captureComments", "captureRunOutcomes"]],
-  ["Decision", ["jevModel", "saveP", "routineP", "jevTimeoutMs"]],
-  ["Extraction", ["extractModel", "extractTimeoutMs"]],
+  ["Decision", ["jevModel", "saveP", "routineP", "dupSimilarity", "jevTimeoutMs"]],
+  ["Extraction", ["extractModel", "extractTimeoutMs", "protectTerms"]],
   ["LLM provider", ["openrouterBaseUrl", "openrouterApiKeyRef"]],
   ["MemOS", ["memosBaseUrl", "captureTimeoutMs"]],
   ["Recall", ["topK", "recallTimeoutMs"]],
@@ -66,13 +66,13 @@ describe("settings page: the plugin config form", () => {
     assert.deepEqual(props.captureProjectIds.default, []);
   });
 
-  it("still has every key a v1 config saved, except the dropped MemOS key; adds only the alert issue", () => {
+  it("still has every key a v1 config saved, except the dropped MemOS key; adds the alert issue and the SLS-200 fields", () => {
     const v1 = [
       "memosBaseUrl", "memosApiKeyRef", "openrouterApiKeyRef", "captureMode", "saveP", "routineP", "jevModel", "extractModel",
       "openrouterBaseUrl", "jevTimeoutMs", "extractTimeoutMs", "recallTimeoutMs", "captureTimeoutMs", "topK",
       "captureComments", "captureRunOutcomes", "captureProjectIds",
     ];
     assert.deepEqual(v1.filter((k) => !(k in props)), ["memosApiKeyRef"]);
-    assert.deepEqual(keys.filter((k) => !v1.includes(k)), ["eventHealthIssue"]);
+    assert.deepEqual(keys.filter((k) => !v1.includes(k)).sort(), ["dupSimilarity", "eventHealthIssue", "protectTerms"]);
   });
 });

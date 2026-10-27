@@ -6,6 +6,9 @@ import { formatMemoryBlock, formatMemoryLine } from "../src/format.js";
 import { hasProse, itemText } from "../src/item.js";
 import { decideGate, questions } from "../src/jev.js";
 import { normalizeShares, readableShares, recallScopes, scopeFor } from "../src/scope.js";
+import { screenMemories } from "../src/capture.js";
+import { noiseReason, taskPrefixOf } from "../src/noise.js";
+import { protectSpans, restoreSpans } from "../src/protect.js";
 
 const A = "company-a";
 const B = "company-b";
@@ -193,5 +196,104 @@ describe("memory block", () => {
     assert.ok(block.length <= 1500);
     assert.match(block, /^<paperclip-memory>/);
     assert.match(block, /<\/paperclip-memory>$/);
+  });
+});
+
+describe("noise check: task logs and task status are not memories (SLS-200)", () => {
+  const cases = [
+    ["commit-hash", "The patch landed in commit b7df3b51 on the release branch."],
+    ["run-or-card-id", "Card 80efabee-1234-4abc-9def-0123456789ab asks for the threshold."],
+    ["pr-number", "The settings form change shipped in PR #14."],
+    ["test-count", "The adapter override patch passes at 26/26."],
+    ["test-count", "The port passes with 39 tests passing and no skips."],
+    ["exit-code", "The offline upgrade dry run exited 0 and changed nothing."],
+    ["task-status", "The upgrade stays blocked until the server restart finishes."],
+    ["task-status", "The review card is still pending with the board."],
+    ["task-status", "The fix is in_review with the Code Reviewer."],
+    ["task-status", "The plugin release is currently on hold for the server restart."],
+    ["task-status", "The patch is not yet merged into the host."],
+    ["task-outcome", "The release-copy loader was merged to main after review."],
+    ["task-outcome", "The context layer spec passed review on the third revision."],
+  ];
+  for (const [reason, text] of cases) {
+    it(`${reason}: ${text}`, () => assert.equal(noiseReason(text), reason));
+  }
+
+  it("keeps durable lessons, rules and facts, also with numbers, paths and status words used as names", () => {
+    for (const text of [
+      "Restarting the Paperclip server stops every agent run in progress.",
+      "On a task with a review stage, setting in_review sends half-done work to the reviewer.",
+      "MemOS fine search took p95 20.2 s against a 3 s recall deadline.",
+      "MemOS listens on 127.0.0.1:8001 and stores memory text as given.",
+      "Plugins load from /Users/claude/work/paperclip-plugins-releases/<plugin>/current.",
+      "Comment bodies reach the plugin as UTF-8 Markdown source.",
+      "Do not run npm install for Paperclip while the server is running.",
+      // Rules in the present tense and lessons with "still" (SLS-200 review).
+      "A task is closed only by its creator; the assignee never sets done.",
+      "A PR is merged only by the Project Director or the Project Lead, with --match-head-commit.",
+      "Every engineer PR is reviewed by Code Reviewer before merge.",
+      "Chrome 111+ refuses the CDP WebSocket without --remote-allow-origins, while /json/version still passes.",
+      "After a plugin update, check that the plugin still receives events.",
+      "The Tailscale range 100.64.0.0/10 must stay open for the lab hosts.",
+      "Backups older than 2026/10/27 use the old layout.",
+    ]) {
+      assert.equal(noiseReason(text, { taskPrefix: "SLS" }), null, text);
+    }
+  });
+
+  it("drops a memory that names a task of this company only when the prefix is given", () => {
+    const text = "The release script is described on SLS-148 for every plugin.";
+    assert.equal(noiseReason(text), null);
+    assert.equal(noiseReason(text, { taskPrefix: "SLS" }), "task-id");
+    assert.equal(noiseReason("Grid tickets like DEV-5899 use another prefix.", { taskPrefix: "SLS" }), null);
+  });
+
+  it("reads the task prefix from an identifier", () => {
+    assert.equal(taskPrefixOf("SLS-200"), "SLS");
+    assert.equal(taskPrefixOf(null), null);
+    assert.equal(taskPrefixOf("not an id"), null);
+  });
+
+  it("screenMemories splits kept from dropped, with reasons, and drops a repeat in the same item", () => {
+    const lesson = { type: "lesson", content: "Restarting the Paperclip server stops every agent run in progress." };
+    const { kept, dropped } = screenMemories([
+      lesson,
+      { type: "fact", content: "Restarting the **Paperclip** server stops every agent run in progress" },
+      { type: "outcome", content: "The patch was merged." },
+      { type: "fact", content: "Deletes need approval from [PERSON_NAME]." },
+    ]);
+    assert.deepEqual(kept, [lesson]);
+    assert.deepEqual(dropped.map((d) => d.reason), ["repeat", "task-outcome", "redacted"]);
+  });
+
+  it("screenMemories drops a memory that still holds a placeholder the model invented", () => {
+    const { kept, dropped } = screenMemories([{ type: "fact", content: "The release copy lives under {{P9}} on the lab host." }]);
+    assert.deepEqual(kept, []);
+    assert.deepEqual(dropped.map((d) => d.reason), ["placeholder"]);
+  });
+});
+
+describe("span protection around the extract call (SLS-200)", () => {
+  it("replaces paths, URLs, addresses and given words with placeholders and restores them", () => {
+    const text = "Undo with `/Users/claude/work/x/undo.json`, see http://127.0.0.1:3100/SLS/issues, ~/.claude/a.json, current/bin/claude/claude, 10.0.0.2:8001 and mail ops@example.test. Oleg agreed.";
+    const { text: sent, spans } = protectSpans(text, { terms: ["Oleg"] });
+    assert.doesNotMatch(sent, /claude|127\.0|10\.0\.0|example\.test|Oleg/);
+    assert.equal(restoreSpans(sent, spans), text);
+  });
+
+  it("gives one span one token, and leaves plain slashes and counts alone", () => {
+    const { text, spans } = protectSpans("Edit /etc/hosts, then /etc/hosts again; 26/26 and and/or stay.");
+    assert.equal(text, "Edit {{P1}}, then {{P1}} again; 26/26 and and/or stay.");
+    assert.deepEqual(spans, ["/etc/hosts"]);
+  });
+
+  it("a placeholder already in the text survives the round trip", () => {
+    const original = "The template uses {{P1}} for /tmp/x.";
+    const { text, spans } = protectSpans(original);
+    assert.equal(restoreSpans(text, spans), original);
+  });
+
+  it("an unknown token stays as the model wrote it", () => {
+    assert.equal(restoreSpans("See {{P7}}.", ["/a/b"]), "See {{P7}}.");
   });
 });

@@ -45,9 +45,11 @@ This package has two parts. They work independently.
 | Decision: model | `jevModel` | `typesafe/jev-1.13` | Keeps or skips each item. Gives probabilities only, writes no text |
 | Decision: keep threshold (saveP) | `saveP` | `0.7` | Probability a content question must reach for an item to pass |
 | Decision: routine threshold (routineP) | `routineP` | `0.5` | An item whose "routine status only" probability reaches this is skipped |
+| Decision: duplicate threshold | `dupSimilarity` | `0.85` | A new memory whose best MemOS search hit in its scope reaches this similarity (a cosine) is a duplicate and is not stored |
 | Decision: timeout (ms) | `jevTimeoutMs` | `5000` | Timeout for each try. Up to 3 tries |
 | Extraction: model | `extractModel` | `~anthropic/claude-haiku-latest` | Writes the short memories (the same Haiku alias MemOS's reader uses) |
 | Extraction: timeout (ms) | `extractTimeoutMs` | `15000` | Timeout for each try. Up to 3 tries |
+| Extraction: protected words | `protectTerms` | `[]` | Words the extract model gets as placeholders and that come back as written, for example a user name the provider would turn into `[PERSON_NAME]`. Paths, URLs, emails and IP addresses are always protected |
 | LLM provider: OpenAI base URL | `openrouterBaseUrl` | `https://openrouter.ai/api/v1` | Base of an OpenAI-compatible API. The extract model calls `/chat/completions`; the decision model calls `/systemone`, which OpenRouter serves. Tests point it at a fake server |
 | LLM provider: OpenAI key | `openrouterApiKeyRef` | — | Secret binding (`{ type: "secret_ref", secretId }`) for that API. Capture is off without it. See step 2 |
 | MemOS: base URL | `memosBaseUrl` | — | MemOS base URL, for example `http://127.0.0.1:8001`. If it is empty, the plugin does nothing. MemOS takes no key |
@@ -148,24 +150,37 @@ Sharing is off by default. The **Memory sharing** page under company settings is
 |---|---|
 | **Items** | Each new agent or board comment (`issue.comment.created`), and each finished run's newest agent comment (`agent.run.finished`). Both use the key `comment:<id>`, so one comment is processed once |
 | **Text** | Fenced code blocks and `<details>` sections are cut first. A comment with no prose left is skipped |
-| **Jev gate** | One call to `typesafe/jev-1.13`. Questions: has a decision / lesson / outcome / durable fact, and "routine status only". The item passes if a content question is ≥ `saveP` and routine is < `routineP`. Jev never writes text |
-| **Extraction** | One Haiku call per passed item: "extract the decisions, lessons, outcomes and facts, one short sentence each, drop routine status". At most 3 memories, 300 characters each, each with its own type. An empty list saves nothing. A reply cut off at `max_tokens` or with invalid JSON keeps its complete memory objects (`salvaged: true`). A reply with no usable list is an `error` verdict, not a retry |
+| **Jev gate** | One call to `typesafe/jev-1.13`. Questions: has a decision / lesson / reusable outcome / durable fact, and "routine status only". The item passes if a content question is ≥ `saveP` and routine is < `routineP`. Jev never writes text |
+| **Extraction** | One Haiku call per passed item. It keeps only knowledge that stays true after the task closes: lessons, decisions that set a rule, lasting facts about systems, and outcomes a later task can reuse (a measured limit, a proven approach or dead end). It drops task status, task logs (merged, deployed, tests N/N, exit codes) and IDs. Most items give an empty list, which saves nothing. At most 3 memories, 300 characters each. The task title is sent, not the task ID. A reply cut off at `max_tokens` or with invalid JSON keeps its complete memory objects (`salvaged: true`). A reply with no usable list is an `error` verdict, not a retry |
+| **Placeholders** | Paths, URLs, emails, IP addresses and `protectTerms` go to the extract model as `{{P1}}`, `{{P2}}`, … and are put back in its answer. The OpenRouter extract call rewrote `/Users/claude/` to `/Users/[PERSON_NAME]/`; MemOS stores text as given |
+| **Code check** | Drops a memory with a commit hash, a run or card ID, a PR number, a test count, an exit code, task-status words (still, blocked, waiting, pending, not yet), a per-task outcome (was merged, passed review), this company's task ID, a leftover redaction label, or a second copy in the same item. All dropped: `noise` verdict. See `src/noise.js` |
+| **Duplicate search** | Each remaining memory is searched in its own scope first. A best hit at `dupSimilarity` or more skips it. All skipped: `duplicate` verdict. A failed search stores the memory (fails open). Runs in both modes |
 | **Save** | In `save` mode, each memory is a sync `fast` add with our IDs. Raw comment text is never stored |
 | **Shadow** | In `shadow` mode (the default), verdicts and extracted memories are logged and nothing is stored. `save` mode logs the verdicts too, see below |
 
 - **Metadata on every memory:** `companyId`, `projectId`, `issueId`, `issueIdentifier`, `commentId`, `runId`, `agentId` or `userId`, `authorType`, `kind` (the memory's type), `jevType`, `jevP`, `itemKey`, `contentHash`, `source`.
 - **No blind run note.** v1 stored one note for every succeeded run, and extracted labelled lines with a regex. Both are gone.
 - **Recall order:** decisions and lessons first, then outcomes and facts, then older v1 memories, still capped at `topK`.
-- **Dedup:** sha256 of the normalized memory text (NFKC, lower case, paired markdown emphasis removed, collapsed spaces, no trailing punctuation), per company + project scope (namespace `memos-dedup`). Items are also marked done (namespace `memos-items`), so a redelivered event makes no second Jev call. In-process locks cover concurrent redelivery.
+- **Exact dedup:** sha256 of the normalized memory text (NFKC, lower case, paired markdown emphasis removed, collapsed spaces, no trailing punctuation), per company + project scope (namespace `memos-dedup`). Items are also marked done (namespace `memos-items`), so a redelivered event makes no second Jev call. In-process locks cover concurrent redelivery.
 - **Why the plugin extracts, not MemOS:** see [`docs/sls-99-step1-fine-add.md`](docs/sls-99-step1-fine-add.md).
 
 ## Verdict log and report
 
 - **Where:** plugin state, one key per company and UTC day (namespace `memos-shadow`), at most 2000 entries a day, in both modes. Each entry holds `mode`, IDs (including the `projectId` a save writes to), the verdict, Jev probabilities and the cost of both calls. It holds no comment text.
-- **Memories:** a `shadow` entry holds the extracted memories. A `save` entry holds only their types (`memoryTypes`) and the add results (`stored`), because the memories are in MemOS, where recall applies sharing.
+- **Verdicts:** `pass`, `skip` (Jev), `empty` (the extractor kept nothing), `noise` (the code check dropped all), `duplicate` (all near a stored memory), `no-text`, `error`.
+- **Memories:** a `shadow` entry holds the memories a save would store, plus `dropped` (with `reason`) and `duplicates` (with `similarity`). A `save` entry holds no memory text: the stored types (`memoryTypes`), the add results (`stored`), and `dropped` and `duplicates` without their text, because the memories are in MemOS, where recall applies sharing.
 - **Retries:** a save that fails is logged, then retried, so one item can have several entries. Count the last entry per `key`.
 - **Read it:** `GET /api/plugins/sls.memos-memory/api/shadow-log?companyId=<id>&date=YYYY-MM-DD` as a board user or an agent of that company. The answer also lists the items waiting for a retry.
 - **Server log:** every verdict is also logged as `memory capture verdict`, in both modes.
+
+## Dry run: the capture rules without saving
+
+- **Route:** `POST /api/plugins/sls.memos-memory/api/dry-run?companyId=<id>`, as a board user or an agent of that company. It runs in the worker, which holds the extractor key.
+- **Comments:** body `{ "comments": [{ "issueId", "commentId", "source"? }], "dupCheck"? }`. Each answer is the verdict entry a capture would log, with memory text. The duplicate search runs only with `"dupCheck": true`.
+- **Stored memories:** body `{ "memories": [{ "id", "text" }] }`. The extractor and the code check judge each text: `keep` (with the memories it gives) or `delete` (with the reasons). No Jev call.
+- **Stores, logs and marks nothing.** A later event for the same comment is still captured.
+- **Limits:** 1 to 10 items a call, 3000 items per company and UTC day (namespace `memos-dryrun`). Each item costs one or two OpenRouter calls.
+- **Used for:** the clean-up list and the replay measure of [SLS-200](/SLS/issues/SLS-200), see [`docs/sls-200-noise-fix.md`](docs/sls-200-noise-fix.md).
 
 ## Outages: the retry queue
 

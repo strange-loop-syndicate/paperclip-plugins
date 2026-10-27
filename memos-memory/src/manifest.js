@@ -1,7 +1,7 @@
 const manifest = {
   id: "sls.memos-memory",
   apiVersion: 1,
-  version: "0.2.1",
+  version: "0.3.0",
   displayName: "MemOS Memory",
   description:
     "Turns agent and board comments into short memories (decisions, lessons, outcomes, facts) in a self-hosted MemOS server, scoped per company and project. A decision model (Jev) decides what is worth keeping; an extract model writes it short. Gives agents memory_recall / memory_retain tools.",
@@ -80,6 +80,15 @@ const manifest = {
         title: "Decision: routine threshold (routineP)",
         description: "Skip an item when its 'routine status only' probability reaches this, even if it passes the keep threshold. 0.05 to 1, default 0.5.",
       },
+      dupSimilarity: {
+        type: "number",
+        minimum: 0.5,
+        maximum: 1,
+        default: 0.85,
+        title: "Decision: duplicate threshold",
+        description:
+          "Before a memory is stored, MemOS is searched for it. If the best hit is at least this similar (0.5 to 1, a cosine), the memory is a duplicate and is not stored. Default 0.85.",
+      },
       jevTimeoutMs: {
         type: "integer",
         minimum: 500,
@@ -101,6 +110,14 @@ const manifest = {
         default: 15000,
         title: "Extraction: timeout (ms)",
         description: "Time limit for each try of the extract call. Up to 3 tries. Default 15000.",
+      },
+      protectTerms: {
+        type: "array",
+        title: "Extraction: protected words",
+        description:
+          "Words the extract model must keep as written, for example a user name the provider would replace with [PERSON_NAME]. Paths, URLs and IP addresses are always kept.",
+        default: [],
+        items: { type: "string", title: "Word" },
       },
       openrouterBaseUrl: {
         type: "string",
@@ -178,6 +195,14 @@ const manifest = {
       routeKey: "shadow-log",
       method: "GET",
       path: "/shadow-log",
+      auth: "board-or-agent",
+      capability: "api.routes.register",
+      companyResolution: { from: "query", key: "companyId" },
+    },
+    {
+      routeKey: "dry-run",
+      method: "POST",
+      path: "/dry-run",
       auth: "board-or-agent",
       capability: "api.routes.register",
       companyResolution: { from: "query", key: "companyId" },

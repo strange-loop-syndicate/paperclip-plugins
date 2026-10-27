@@ -25,10 +25,12 @@ export const CONTENT_QUESTIONS = {
     "A cause, a trap or a reusable rule is stated",
     "No cause, trap or reusable rule is stated",
   ),
+  // Only a result a later task can reuse. "Merged", "deployed" or "tests
+  // pass" is a task log; the task already holds it (SLS-200).
   outcome: noul(
-    "Does the text report how a task or step ended: what was delivered, merged, fixed, measured, or found not possible?",
-    "A concrete result is reported",
-    "No result is reported; the work is still in progress or only planned",
+    "Does the text report a result that later tasks can reuse: a measured limit, an approach proven to work or to fail, or something found not possible?",
+    "A reusable result is stated, such as a measured number, a working approach or a proven dead end",
+    "No reusable result; only that work was done, merged, deployed, reviewed or tested, or that it is still in progress",
   ),
   fact: noul(
     "Does the text state a durable fact that stays true after this task: about a system, a tool, a setting, a person's preference or a project?",
@@ -40,7 +42,7 @@ export const CONTENT_QUESTIONS = {
 export const ROUTINE_QUESTION = {
   routine: noul(
     "Is the text only routine status, with nothing worth remembering later?",
-    "Only progress pings, hand-offs, 'starting now', 'tests pass', review requests or acknowledgements",
+    "Only progress pings, hand-offs, 'starting now', 'tests pass', 'merged', 'deployed', status changes, waiting on someone, review requests or acknowledgements",
     "It also holds a decision, a lesson, a result or a lasting fact",
   ),
 };
