@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { contentHash, normalizeContent } from "../src/content.js";
+import { parseJudgeReply } from "../src/dupjudge.js";
 import { cleanMemories, parseReply } from "../src/extractor.js";
 import { formatMemoryBlock, formatMemoryLine } from "../src/format.js";
 import { hasProse, itemText } from "../src/item.js";
@@ -167,6 +168,24 @@ describe("extractor reply parsing", () => {
   it("returns null when no memory can be read", () => {
     for (const reply of ["I cannot help with that.", '{"memories":"none"}', '{"memories":[', "", null]) {
       assert.equal(parseReply(reply), null, JSON.stringify(reply));
+    }
+  });
+});
+
+describe("duplicate judge reply parsing (SLS-206)", () => {
+  it("reads the verdict after prose, and the first object when there are two", () => {
+    const reply = 'Looking at NEW and EXISTING 2, both say the same thing.\n\n{"duplicate": true, "of": 2}\n\nThen {"duplicate":false,"of":null}';
+    assert.deepEqual(parseJudgeReply(reply), { duplicate: true, of: 2 });
+  });
+
+  it("keeps a verdict cut off at the cap after it was written", () => {
+    assert.deepEqual(parseJudgeReply('{"duplicate": false, "of": nu'), { duplicate: false, of: null });
+    assert.deepEqual(parseJudgeReply('{"duplicate":true,"of":3'), { duplicate: true, of: 3 });
+  });
+
+  it("returns null when the cut came before the verdict, or there is none", () => {
+    for (const reply of ["Let me compare each EXISTING memory with NEW. Memory 1 covers", '{"duplicate": tr', '{"dupl', "I cannot tell.", "", null]) {
+      assert.equal(parseJudgeReply(reply), null, JSON.stringify(reply));
     }
   });
 });

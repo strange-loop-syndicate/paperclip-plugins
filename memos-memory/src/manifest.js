@@ -1,7 +1,7 @@
 const manifest = {
   id: "sls.memos-memory",
   apiVersion: 1,
-  version: "0.3.1",
+  version: "0.3.2",
   displayName: "MemOS Memory",
   description:
     "Turns agent and board comments into short memories (decisions, lessons, outcomes, facts) in a self-hosted MemOS server, scoped per company and project. A decision model (Jev) decides what is worth keeping; an extract model writes it short. Gives agents memory_recall / memory_retain tools.",
