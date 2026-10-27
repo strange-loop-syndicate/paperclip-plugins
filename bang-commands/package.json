@@ -1,6 +1,6 @@
 {
   "name": "paperclip-plugin-bang-commands",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "private": true,
   "description": "Run shell commands from owner !command task comments",
@@ -25,6 +25,9 @@
     "@paperclipai/plugin-sdk": "2026.1012.0",
     "@types/node": "^24.0.0",
     "esbuild": "^0.27.3",
+    "mdast-util-gfm-strikethrough": "^2.0.1",
+    "mdast-util-mdx-jsx": "^3.2.0",
+    "mdast-util-to-markdown": "^2.1.2",
     "typescript": "^5.7.3",
     "vitest": "^3.0.5"
   }

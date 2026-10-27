@@ -5,6 +5,7 @@ import { createPlugin, type WorkerDeps } from "../src/worker.js";
 import { fence, label, parseComment, truncate } from "../src/handler.js";
 import { runCommand } from "../src/runner.js";
 import type { BangCommand } from "../src/commands.js";
+import { paragraph, storeBlocks, storeTyped } from "./editor.js";
 
 const COMPANY = "co_1";
 const ISSUE = "iss_1";
@@ -265,6 +266,150 @@ describe("parse and format", () => {
 
   it("uses a fence longer than any backtick run in the output", () => {
     expect(fence("x ``` y").startsWith("````text")).toBe(true);
+  });
+});
+
+describe("comment Markdown → typed command", () => {
+  const shell = (body: string) => {
+    const p = parseComment(body, commands);
+    if (p.kind !== "run") throw new Error(`expected a command, got ${p.kind}`);
+    return p.command.argv[2];
+  };
+  /** Type `!<command>` in the editor, store it, parse it back. */
+  const roundTrip = (command: string) => shell(storeTyped(`!${command}`));
+
+  it("runs the SLS-193 command as typed", () => {
+    const stored = "!PAPERCLIP\\_COMPANY\\_ID\\=abc python3 -I /x/y.py";
+    expect(storeTyped("!PAPERCLIP_COMPANY_ID=abc python3 -I /x/y.py")).toBe(stored);
+    expect(shell(stored)).toBe("PAPERCLIP_COMPANY_ID=abc python3 -I /x/y.py");
+  });
+
+  const SYMBOLS = ["_", "=", "*", "$", "&", "|", ">", "<", ";", "'", '"', "#", "[", "]", "(", ")", "{", "}", "~", "!", "%", "^", "\\", "`", "-", "+", ".", ":", "@", "/", "?", ","];
+  it.each(SYMBOLS)("keeps %s mid-line, doubled and at a line start", (s) => {
+    const typed = `echo a${s}b ${s} ${s}${s}x ${s}[y](z)\n${s}line\n${s}${s}`;
+    expect(roundTrip(typed)).toBe(typed);
+  });
+
+  it("keeps the editor's stored escapes for the risky symbols", () => {
+    expect(storeTyped("!echo _ = * < ~ [ ` \\_")).toBe("!echo \\_ \\= \\* \\< \\~ \\[ \\` \\\\\\_");
+    expect(roundTrip("echo _ = * < ~ [ ` \\_")).toBe("echo _ = * < ~ [ ` \\_");
+  });
+
+  it("keeps real backslashes", () => {
+    expect(shell("!echo a\\\\b")).toBe("echo a\\b");
+    expect(roundTrip("echo \\\\ \\n \\$HOME a\\")).toBe("echo \\\\ \\n \\$HOME a\\");
+    expect(roundTrip("printf 'a\\tb\\n' | sed 's/\\(a\\)/\\1/'")).toBe("printf 'a\\tb\\n' | sed 's/\\(a\\)/\\1/'");
+  });
+
+  it("keeps chains, redirects, globs and substitutions", () => {
+    for (const typed of [
+      "cd /tmp && ls -la || echo fail; echo done",
+      "cat < in.txt > out.txt 2>&1",
+      "diff <(sort a) <(sort b)",
+      "ls *.txt **/_x_*.md",
+      'x=$(date +%s); echo "${x:-0}" ~/y',
+      "grep -E '^a|b$' f | awk '{print $1}'",
+      "echo <b>tag</b> <https://x.y> <a@b.co>",
+      "echo &amp; &#39; &lt; &nbsp;",
+      "python3 -c 'print(1 == 2, [1][0], {\"a\": 1})'",
+    ]) {
+      expect(roundTrip(typed)).toBe(typed);
+    }
+  });
+
+  it("keeps multi-line commands and heredocs, one newline per Enter", () => {
+    const heredoc = "cat <<'EOF' > /tmp/x\n# head_er\n- item *one*\n1. two\n> quote\n  indented\n\ttab\nEOF";
+    expect(roundTrip(heredoc)).toBe(heredoc);
+    expect(roundTrip("echo a\n\necho b")).toBe("echo a\n\necho b");
+    expect(roundTrip("ls \\\n  -la")).toBe("ls \\\n  -la");
+  });
+
+  it("turns a hard break (Shift+Enter) into a newline", () => {
+    const stored = storeBlocks([
+      paragraph([{ type: "text", value: "!echo a \\" }, { type: "break" }, { type: "text", value: "b" }, { type: "break" }, { type: "text", value: "echo c" }]),
+    ]);
+    expect(shell(stored)).toBe("echo a \\\nb\necho c");
+    expect(shell("!echo a  \necho b")).toBe("echo a\necho b");
+  });
+
+  it("turns an auto-linked URL back into the typed URL", () => {
+    const url = "https://x.com/a_b?c=1&d=[2]";
+    const stored = storeBlocks([
+      paragraph([
+        { type: "text", value: "!curl -s " },
+        { type: "link", url, children: [{ type: "text", value: url }] },
+        { type: "text", value: " | jq ." },
+      ]),
+    ]);
+    expect(stored).toContain("](https://");
+    expect(shell(stored)).toBe(`curl -s ${url} | jq .`);
+    expect(shell('!open [www.x.com](https://www.x.com "t")')).toBe("open www.x.com");
+  });
+
+  it("keeps typed backticks that the editor turned into inline code", () => {
+    const stored = storeBlocks([paragraph([{ type: "text", value: "!echo " }, { type: "inlineCode", value: "date +%_H" }])]);
+    expect(stored).toBe("!echo `date +%_H`");
+    expect(shell(stored)).toBe("echo `date +%_H`");
+  });
+
+  it("runs a fenced code block byte-for-byte", () => {
+    const code = "echo a\\_b \\= &amp; [x](y)\n\nprintf '%s\\n' `pwd`";
+    for (const fenceMarker of ["```", "~~~", "````"]) {
+      expect(shell(`!\n\n${fenceMarker}bash\n${code}\n${fenceMarker}`)).toBe(code);
+    }
+    expect(shell(storeBlocks([paragraph([{ type: "text", value: "!" }]), { type: "code", lang: "txt", value: code }]))).toBe(code);
+    expect(shell("!```sh\necho open")).toBe("echo open");
+  });
+
+  it("unescapes text around a code block and keeps the block as is", () => {
+    const stored = storeBlocks([
+      paragraph([{ type: "text", value: "!cd /tmp/a_b" }]),
+      { type: "code", lang: "txt", value: "cat <<'EOF'\nx\\_y\n\nEOF" },
+      paragraph([{ type: "text", value: "echo done_ok" }]),
+    ]);
+    expect(shell(stored)).toBe("cd /tmp/a_b\ncat <<'EOF'\nx\\_y\n\nEOF\necho done_ok");
+  });
+
+  it("runs one inline code span byte-for-byte", () => {
+    expect(shell("!`PAPERCLIP\\_ID\\=1 env`")).toBe("PAPERCLIP\\_ID\\=1 env");
+    expect(shell("!`` echo `id` ``")).toBe("echo `id`");
+    expect(shell("!`status`")).toBe("status");
+    expect(shell("!`a` and `b`")).toBe("`a` and `b`");
+  });
+
+  it("still matches images, help and shortcuts", () => {
+    const kind = (t: string) => parseComment(t, commands).kind;
+    expect(kind("![](/api/assets/x/content)")).toBe("image");
+    expect(kind(storeTyped("!help"))).toBe("help");
+    expect(parseComment(storeTyped("!status"), commands)).toEqual({ kind: "run", command: commands[0] });
+    expect(kind("!&#x20;")).toBe("none");
+    expect(kind("!```\n```")).toBe("none");
+  });
+
+  it("labels the reply with the unescaped command", async () => {
+    const h = setup();
+    await h.plugin.definition.setup(h.harness.ctx);
+    await comment(h, "c1", "!PAPERCLIP\\_COMPANY\\_ID\\=abc env", { user: "owner" });
+    expect(h.ran).toEqual(["PAPERCLIP_COMPANY_ID=abc env"]);
+    expect((await replies(h))[0]).toContain("`!PAPERCLIP_COMPANY_ID=abc env`");
+  });
+
+  it("runs the SLS-193 command shape through zsh with exit 0", async () => {
+    const p = parseComment(storeTyped("!PAPERCLIP_COMPANY_ID=a48292a1-x /usr/bin/printenv PAPERCLIP_COMPANY_ID"), commands);
+    if (p.kind !== "run") throw new Error(p.kind);
+    expect(p.command.argv.slice(0, 2)).toEqual(["/bin/zsh", "-lc"]);
+    const r = await runCommand({ ...p.command, cwd: undefined });
+    expect(r.output.trim()).toBe("a48292a1-x");
+    expect(r.exitCode).toBe(0);
+  });
+
+  it("passes every corpus symbol to zsh unchanged", async () => {
+    const literal = "a_b=c*d$e&f|g>h<i;j\"k#l[m]n(o)p{q}r~s!t%u^v\\w`x";
+    const p = parseComment(storeTyped(`!cat <<'EOF'\n${literal}\nEOF`), commands);
+    if (p.kind !== "run") throw new Error(p.kind);
+    const r = await runCommand({ ...p.command, cwd: undefined });
+    expect(r.output).toBe(`${literal}\n`);
+    expect(r.exitCode).toBe(0);
   });
 });
 

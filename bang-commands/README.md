@@ -9,6 +9,36 @@ in `ALLOWED_USER_IDS` (`src/commands.ts`, default `local-board`) trigger anythin
 - Anything else after `!` → runs in `/bin/zsh -lc` in `/Users/claude/work/workspace`,
   timeout 120 s. Multi-line comments run as one script.
 
+## Special characters
+
+The comment editor stores Markdown, not the text you typed. The plugin turns it
+back into your text before it runs, so `!FOO_ID=1 env` runs `FOO_ID=1 env`, not
+`FOO\_ID\=1 env`.
+
+| Editor stores | Runs as |
+|---|---|
+| `\` + punctuation: `\_` `\=` `\*` `\<` `\[` `` \` `` `\\` … | that character (`\\` → one `\`) |
+| `\` + anything else (`\n`, `\w`) | unchanged |
+| `&#x20;` `&#x9;` (spaces and tabs at a line start or end) | the space or tab |
+| `&amp;` `&lt;` `&gt;` `&quot;` `&apos;` `&nbsp;`, `&#NN;`, `&#xNN;` | the character (a no-break space becomes a space) |
+| a blank line between lines (Enter) | one newline; an empty line you typed stays empty |
+| `\` or two spaces at a line end (Shift+Enter) | a newline |
+| `[text](url)` (a URL the editor turned into a link) | `text`, the URL as typed |
+| `` `x` `` (backticks the editor turned into inline code) | `` `x` ``, unchanged |
+
+**A code block or code span runs byte-for-byte.** If the whole text after `!` is one
+fenced code block (```` ``` ```` or `~~~`, any language) or one inline code span, its
+content runs exactly as written, with no unescaping, and never as a shortcut. Text mixed
+with code blocks is unescaped, and each block's content is kept as is. Use a code block when
+the editor changes your text, for example:
+
+- `_x_` typed as you go can turn into italics, which the editor stores as `*x*`.
+- a command that you post through the API, not the editor (its body is not Markdown).
+
+The rules come from the installed editor (MDXEditor with `mdast-util-to-markdown`, then
+Paperclip's `toStoredMarkdown`). The tests serialize typed text with the same library and
+rules, then check that it runs as typed (`tests/editor.ts`).
+
 ## Shortcuts
 
 | Comment | Runs | Changes anything |
@@ -26,7 +56,8 @@ The list lives in `src/commands.ts`. Edit it, then `npm run build`.
 - **Allowed users only.** Events with `actorType` other than `user`, comments
   with an agent author, and users not in `ALLOWED_USER_IDS` are ignored.
   The plugin's own replies are `plugin` events, so no loops.
-- **Any comment starting with `!` runs.** Do not start ordinary comments with `!`.
+- **Any comment starting with `!` runs**, after the unescaping in "Special characters".
+  Do not start ordinary comments with `!`.
   Exception: `![` (a markdown image, such as a pasted screenshot) runs nothing and posts nothing; the plugin only wakes the assignee.
 - **Timeout** per command. The process group is killed with SIGKILL.
 - **Output** is truncated to the last 6000 characters.
