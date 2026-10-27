@@ -265,7 +265,7 @@ export function createCapture({ now = () => Date.now() } = {}) {
     const fresh = [];
     const duplicates = [];
     for (const m of kept) {
-      const hit = nearDuplicate ? await nearDuplicate(scope, m.content) : null;
+      const hit = nearDuplicate ? await nearDuplicate(scope, m.content, { deadline }) : null;
       if (hit) duplicates.push({ ...m, similarity: hit.similarity });
       else fresh.push(m);
     }

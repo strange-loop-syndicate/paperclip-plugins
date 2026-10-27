@@ -172,11 +172,13 @@ export function createMemoryPlugin({ fetchImpl = (url, init) => globalThis.fetch
   /**
    * `{ similarity }` when the scope already holds `content` in other words
    * (the best search hit reaches cfg.dupSimilarity), else null. A failed
-   * search returns no hits, so the memory counts as new.
+   * search, or none left before `deadline`, counts the memory as new.
    */
   function nearDuplicateFor(cfg) {
-    return async (scope, content) => {
-      const hits = await cfg.client.search({ scope, query: content, topK: 3, timeoutMs: cfg.captureTimeoutMs });
+    return async (scope, content, { deadline = Infinity } = {}) => {
+      const left = Math.min(cfg.captureTimeoutMs, deadline - now());
+      if (left < 100) return null;
+      const hits = await cfg.client.search({ scope, query: content, topK: 3, timeoutMs: left });
       const best = Math.max(-1, ...hits.map((h) => Number(h.metadata?.relativity)).filter(Number.isFinite));
       return best >= cfg.dupSimilarity ? { similarity: Math.round(best * 1000) / 1000 } : null;
     };

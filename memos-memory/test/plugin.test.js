@@ -3,7 +3,7 @@ import { after, before, beforeEach, describe, it } from "node:test";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import { contentHash } from "../src/content.js";
 import manifest from "../src/manifest.js";
-import { createMemoryPlugin, RETRY_JOB_KEY, SECRET_RETRY_MS, SECRET_TTL_MS } from "../src/plugin.js";
+import { createMemoryPlugin, EVENT_BUDGET_MS, RETRY_JOB_KEY, SECRET_RETRY_MS, SECRET_TTL_MS } from "../src/plugin.js";
 import { fakeHostSecrets, RATE_LIMIT, secretRef } from "./helpers/fake-secrets.js";
 import { deadUrl, seedMemory, startFakeServer } from "./helpers/fake-servers.js";
 
@@ -1090,5 +1090,24 @@ describe("dry-run route: the capture rules without saving", () => {
     assert.equal((await dryRun(h, { memories: [two[0]] })).status, 200);
     now.advance(24 * 60 * 60 * 1000);
     assert.equal((await dryRun(h, { memories: two })).status, 200, "a new UTC day has a new budget");
+  });
+});
+
+describe("duplicate search: the event deadline holds", () => {
+  let server;
+  before(async () => (server = await startFakeServer()));
+  after(() => server.close());
+  beforeEach(() => resetServer(server));
+
+  it("with no time left before the deadline, the search is skipped and the memory is stored", async () => {
+    const now = clock();
+    server.state.llm.memories = (b) => {
+      now.advance(EVENT_BUDGET_MS);
+      return [{ type: "decision", text: MEMORY }];
+    };
+    const h = await setup(server, {}, {}, { now });
+    await h.emit("issue.comment.created", ...commentEvent());
+    assert.equal(server.memosRequests().filter((r) => r.path === "/product/search").length, 0);
+    assert.equal(adds(server).length, 1);
   });
 });
