@@ -178,7 +178,7 @@ Sharing is off by default. The **Memory sharing** page under company settings is
 
 - **Route:** `POST /api/plugins/sls.memos-memory/api/dry-run?companyId=<id>`, as a board user or an agent of that company. It runs in the worker, which holds the extractor key.
 - **Comments:** body `{ "comments": [{ "issueId", "commentId", "source"? }], "dupCheck"? }`. Each answer is the verdict entry a capture would log, with memory text. The duplicate search runs only with `"dupCheck": true`.
-- **Duplicate judge alone:** body `{ "duplicates": [{ "id", "text", "candidates": [text, …] }] }` (1 to 3 candidates). Each answer is `duplicate` (with `of`, the 1-based candidate) or `new`.
+- **Duplicate judge alone:** body `{ "duplicates": [{ "id", "text", "candidates": [text, …] }] }` (1 to 3 candidates). Each answer is `duplicate` (with `of`, the 1-based candidate) or `new`. An `error` with no verdict names the reply's shape, not its text: `finish_reason`, its length, and whether it held a JSON object. `finish_reason=length` means the reply hit the token cap.
 - **Stored memories:** body `{ "memories": [{ "id", "text" }] }`. The extractor and the code check judge each text: `keep` (with the memories it gives) or `delete` (with the reasons). No Jev call.
 - **Stores, logs and marks nothing.** A later event for the same comment is still captured.
 - **Limits:** 1 to 10 items a call, 3000 items per company and UTC day (namespace `memos-dryrun`). Each item costs one or two OpenRouter calls.

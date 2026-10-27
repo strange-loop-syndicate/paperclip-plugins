@@ -1190,6 +1190,38 @@ describe("duplicate judge: candidates the cosine check cannot settle (SLS-200)",
     assert.ok(h.logs.some((l) => /duplicate judge failed/.test(l.message)));
   });
 
+  it("asks for the JSON first, with room to answer, and reads a verdict after prose (SLS-206)", async () => {
+    seedMemory(server.state, { companyId: A, projectId: "p1", content: STORED });
+    server.state.similarity = () => 0.75;
+    server.state.llm.chatReply = judgeReplies('Both describe where recall runs.\n{"duplicate": true, "of": 1}');
+    const h = await setup(server, { dupSimilarity: 0.8 });
+    await h.emit("issue.comment.created", ...commentEvent());
+    assert.equal(adds(server).length, 0);
+    const { body } = judgeCalls()[0];
+    assert.equal(body.max_tokens, 400);
+    assert.match(body.messages[0].content, /Start your answer with the JSON, before any other text/);
+  });
+
+  it("a reply cut off at the cap before the verdict fails open and logs its shape, not its text (SLS-206)", async () => {
+    seedMemory(server.state, { companyId: A, projectId: "p1", content: STORED });
+    server.state.similarity = () => 0.75;
+    const cut = "Let me compare NEW with each EXISTING memory. Memory 1 says recall runs";
+    server.state.llm.chatReply = (b) => (b.messages[0].content.includes("free of repeats") ? { content: cut, finish_reason: "length" } : null);
+    const h = await setup(server, { dupSimilarity: 0.8 });
+    await h.emit("issue.comment.created", ...commentEvent());
+    assert.equal(adds(server).length, 1);
+    const log = h.logs.find((l) => /duplicate judge failed/.test(l.message));
+    assert.match(log.message, new RegExp(`without a verdict \\(finish_reason=length, ${cut.length} chars, no JSON object\\)`));
+    assert.doesNotMatch(log.message, /Memory 1 says/);
+  });
+
+  it("the dry-run route names the shape of a reply with no text (SLS-206)", async () => {
+    server.state.llm.chatReply = () => ({ content: null, finish_reason: "stop" });
+    const h = await setup(server);
+    const res = await dryRun(h, { duplicates: [{ id: "a", text: "A fact.", candidates: ["Another fact."] }] });
+    assert.deepEqual(res.body.results, [{ id: "a", verdict: "error", error: "duplicate judge answered without a verdict (finish_reason=stop, no text)" }]);
+  });
+
   it("the dry-run route judges given pairs and stores nothing", async () => {
     server.state.llm.chatReply = (b) => ({ content: b.messages[1].content.includes("same lesson") ? '{"duplicate":true,"of":2}' : '{"duplicate":false,"of":null}' });
     const h = await setup(server);
