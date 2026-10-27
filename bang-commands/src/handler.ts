@@ -1,4 +1,5 @@
 import { shellCommand, type BangCommand } from "./commands.js";
+import { codeWrapperContent, markdownToCommand } from "./markdown.js";
 import type { RunResult } from "./runner.js";
 
 /** Max characters of command output in a reply comment. */
@@ -15,16 +16,21 @@ const NAME = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 /**
  * A comment triggers when its trimmed body starts with `!`.
  * - `![…` (a markdown image, such as a pasted screenshot) → image: runs nothing.
- * - `!help` → list of shortcuts.
- * - `!<name>` alone, matching a shortcut → that shortcut.
- * - anything else → the text after `!` runs in a shell (may be multi-line).
+ * - one code block or code span after `!` → its content runs in a shell, byte-for-byte.
+ * - otherwise the stored Markdown is turned back into the typed text, then:
+ *   `!help` → list of shortcuts; `!<name>` matching a shortcut → that shortcut;
+ *   anything else → runs in a shell (may be multi-line).
  */
 export function parseComment(body: string, commands: BangCommand[]): Parsed {
   const text = body.trim();
   if (!text.startsWith("!")) return { kind: "none" };
-  const rest = text.slice(1).trim();
+  const stored = text.slice(1).trim();
+  if (!stored) return { kind: "none" };
+  if (stored.startsWith("[")) return { kind: "image" };
+  const code = codeWrapperContent(stored);
+  if (code !== null) return code.trim() ? { kind: "run", command: shellCommand(code) } : { kind: "none" };
+  const rest = markdownToCommand(stored);
   if (!rest) return { kind: "none" };
-  if (rest.startsWith("[")) return { kind: "image" };
   if (rest.toLowerCase() === "help") return { kind: "help" };
   if (NAME.test(rest)) {
     const command = commands.find((c) => c.name === rest.toLowerCase());
