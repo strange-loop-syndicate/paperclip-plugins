@@ -11,6 +11,12 @@ import { LlmUnavailable, postJsonWithRetries, usageCost } from "./llm-http.js";
 // The JSON-first prompt keeps a normal answer short; the room is for the rest.
 export const DUP_JUDGE_MAX_TOKENS = 400;
 
+// SLS-211: in the SLS-200 round 4 replay, 4 of 87 calls ended at the 400 cap
+// with no text or 6 characters. Only reasoning spends output tokens outside the
+// text, and on OpenRouter it shares max_tokens with the answer. A yes/no answer
+// needs no reasoning, so the judge asks for none.
+export const DUP_JUDGE_REASONING = Object.freeze({ effort: "none" });
+
 const SYSTEM_PROMPT = `You keep a store of short memories for software agents free of repeats.
 
 You get one NEW memory and a numbered list of EXISTING memories from the same store. Decide whether storing NEW adds nothing, because one EXISTING memory already states the same fact, rule or lesson, in any words.
@@ -41,8 +47,12 @@ export function parseJudgeReply(content) {
   return { duplicate: m[1] === "true", of: of ? Number(of[1]) : null };
 }
 
-/** What a reply without a verdict looked like, without its text. */
-function replyShape(choice) {
+/**
+ * What a reply without a verdict looked like, without its text: where the
+ * output tokens went (usage) and how long any reasoning was. Reasoning can
+ * quote the memories, so only its length is logged.
+ */
+function replyShape(choice, usage) {
   const content = choice?.message?.content;
   const parts = [`finish_reason=${choice?.finish_reason ?? "none"}`];
   if (typeof content !== "string") parts.push("no text");
@@ -50,6 +60,10 @@ function replyShape(choice) {
     parts.push(`${content.length} chars`);
     if (!content.includes("{")) parts.push("no JSON object");
   }
+  const count = (n) => (Number.isInteger(n) ? n : "?");
+  parts.push(`completion_tokens=${count(usage?.completion_tokens)}`, `reasoning_tokens=${count(usage?.completion_tokens_details?.reasoning_tokens)}`);
+  const reasoning = choice?.message?.reasoning;
+  if (typeof reasoning === "string" && reasoning.length > 0) parts.push(`reasoning ${reasoning.length} chars`);
   return parts.join(", ");
 }
 
@@ -75,6 +89,7 @@ export function createDupJudge({ apiKey, fetchImpl = globalThis.fetch, model, ur
           model,
           temperature: 0,
           max_tokens: DUP_JUDGE_MAX_TOKENS,
+          reasoning: DUP_JUDGE_REASONING,
           usage: { include: true },
           messages: [
             { role: "system", content: SYSTEM_PROMPT },
@@ -84,7 +99,7 @@ export function createDupJudge({ apiKey, fetchImpl = globalThis.fetch, model, ur
       });
       const choice = json?.choices?.[0];
       const parsed = parseJudgeReply(choice?.message?.content);
-      if (!parsed) throw new LlmUnavailable(`duplicate judge answered without a verdict (${replyShape(choice)})`, { outage: false });
+      if (!parsed) throw new LlmUnavailable(`duplicate judge answered without a verdict (${replyShape(choice, json?.usage)})`, { outage: false });
       const of = parsed.duplicate && Number.isInteger(parsed.of) && parsed.of >= 1 && parsed.of <= candidates.length ? parsed.of : null;
       return { duplicate: parsed.duplicate, of, costUsd: usageCost(json) };
     },

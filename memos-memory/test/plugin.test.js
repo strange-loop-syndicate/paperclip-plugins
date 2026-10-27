@@ -1247,7 +1247,7 @@ describe("duplicate judge: candidates the cosine check cannot settle (SLS-200)",
     await h.emit("issue.comment.created", ...commentEvent());
     assert.equal(adds(server).length, 1);
     const log = h.logs.find((l) => /duplicate judge failed/.test(l.message));
-    assert.match(log.message, new RegExp(`without a verdict \\(finish_reason=length, ${cut.length} chars, no JSON object\\)`));
+    assert.match(log.message, new RegExp(`without a verdict \\(finish_reason=length, ${cut.length} chars, no JSON object, completion_tokens=\\?, reasoning_tokens=\\?\\)`));
     assert.doesNotMatch(log.message, /Memory 1 says/);
   });
 
@@ -1255,7 +1255,35 @@ describe("duplicate judge: candidates the cosine check cannot settle (SLS-200)",
     server.state.llm.chatReply = () => ({ content: null, finish_reason: "stop" });
     const h = await setup(server);
     const res = await dryRun(h, { duplicates: [{ id: "a", text: "A fact.", candidates: ["Another fact."] }] });
-    assert.deepEqual(res.body.results, [{ id: "a", verdict: "error", error: "duplicate judge answered without a verdict (finish_reason=stop, no text)" }]);
+    assert.deepEqual(res.body.results, [{ id: "a", verdict: "error", error: "duplicate judge answered without a verdict (finish_reason=stop, no text, completion_tokens=?, reasoning_tokens=?)" }]);
+  });
+
+  it("asks for no reasoning, so the 400-token room is for the answer (SLS-211)", async () => {
+    server.state.llm.chatReply = () => ({ content: '{"duplicate":false,"of":null}' });
+    const h = await setup(server);
+    const res = await dryRun(h, { duplicates: [{ id: "a", text: "A fact.", candidates: ["Another fact."] }] });
+    assert.equal(res.body.results[0].verdict, "new");
+    const { body } = extractCalls(server)[0];
+    assert.deepEqual(body.reasoning, { effort: "none" });
+    assert.equal(body.max_tokens, 400);
+  });
+
+  it("empty text at the cap fails open and logs where the tokens went, not the reasoning text (SLS-211)", async () => {
+    // The SLS-200 round 4 shape: finish_reason=length, no text, all 400 output tokens spent on reasoning.
+    const reasoning = "NEW says recall runs in a wrapper. EXISTING 1 says the same";
+    server.state.llm.chatReply = () => ({ content: null, finish_reason: "length", reasoning, usage: { completion_tokens: 400, completion_tokens_details: { reasoning_tokens: 400 } } });
+    const h = await setup(server);
+    const res = await dryRun(h, { duplicates: [{ id: "a", text: "A fact.", candidates: ["Another fact."] }] });
+    assert.deepEqual(res.body.results, [
+      { id: "a", verdict: "error", error: `duplicate judge answered without a verdict (finish_reason=length, no text, completion_tokens=400, reasoning_tokens=400, reasoning ${reasoning.length} chars)` },
+    ]);
+    assert.doesNotMatch(res.body.results[0].error, /recall runs/);
+    // 6 characters of text at the cap, as in round 4 order 277: still no verdict.
+    resetServer(server);
+    server.state.llm.chatReply = () => ({ content: '{"dupl', finish_reason: "length", usage: { completion_tokens: 400, completion_tokens_details: { reasoning_tokens: 397 } } });
+    const h2 = await setup(server);
+    const res2 = await dryRun(h2, { duplicates: [{ id: "b", text: "A fact.", candidates: ["Another fact."] }] });
+    assert.equal(res2.body.results[0].error, "duplicate judge answered without a verdict (finish_reason=length, 6 chars, completion_tokens=400, reasoning_tokens=397)");
   });
 
   it("the dry-run route judges given pairs and stores nothing", async () => {
