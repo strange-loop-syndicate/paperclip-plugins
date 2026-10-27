@@ -14,44 +14,38 @@ Shows Claude and Codex subscription usage in the Paperclip sidebar.
 
 | Provider | Source | Refresh |
 |---|---|---|
-| Claude | Newest `rate_limit_event` in the company's `claude_local` run logs (Claude Code stream-json, escaped inside each log `chunk`) | Every 2 min, shared by all tabs |
+| Claude | Anthropic OAuth usage API (`GET https://api.anthropic.com/api/oauth/usage`), read by the plugin worker for the account Claude Code is signed in as | Every 60 s, shared with the interactive status line |
 | Codex | `GET /api/companies/:id/costs/quota-windows` (the host polls OpenAI) | Every 5 min, backoff 10/20/30 min on failure |
-| Claude fallback | The same quota-windows route, only while the run logs give no value | As Codex |
 
-The Anthropic usage API behind the quota-windows route returns 429 for this account most of the time. The run logs carry the same limits on every Claude turn, so they are the primary source. The quota-windows route is not called at all when only Claude is used and its run logs have data.
+**Claude, the same way as the status line** (`~/.claude/hooks/statusline.sh`, `refresh_usage_api`):
 
-**Run-log scan (bounded):**
+1. **Cache:** read `~/.claude/usage-exact.json`. If it is younger than 60 s, and not older than `.credentials.json` (an account switch rewrites that file), use it. Interactive sessions refresh it every 60 s.
+2. **Refresh:** else take the status line's lock directory `/tmp/statusline-refresh.lock.d` (a lock older than 30 s is reaped). Read the token from `$CLAUDE_CONFIG_DIR/.credentials.json` (default `~/.claude`), call the API with `anthropic-beta: oauth-2025-04-20`, and write `usage-exact.json` atomically in the status line's shape. One poll per 60 s across the status line and the plugin.
+3. **Failure (429, network, rejected token):** keep the last good file value. The hover shows its time and the reason. A `Retry-After` header pauses calls for that long; without one, the next 60 s tick retries.
+4. **Account:** the hover names the token's own account, from `GET https://api.anthropic.com/api/oauth/profile` (as cca does). One call per token, kept in memory. Not `~/.claude.json`: live sessions rewrite its `oauthAccount` from their own copy, so it can name the previous account. Only when the profile call fails does the hover show that email, marked "from .claude.json, may lag an account switch".
 
-1. `GET /api/companies/:id/heartbeat-runs?limit=30&summary=true` — the board's own run list.
-2. Keep runs of the company's `claude_local` agents, newest activity first, at most 6.
-3. `GET /api/heartbeat-runs/:runId/log?offset=…&limitBytes=…` — the last 256 KB of a finished log. If that has no event, or the run is still running (size unknown), the first 64 KB.
-4. Stop as soon as no remaining run was active after the newest event found. Newest event by log time wins.
+- **Never the keychain:** a locked keychain opens a modal password dialog.
+- **Token:** kept in worker memory for one request. Never logged, cached or returned to the browser.
+- **Run logs are not a source:** their `rate_limit_event`s carry no account, so after an account switch they mixed accounts (SLS-188).
 
-On the lab logs a scan reads 1–3 runs.
+## Shared cache (Codex)
 
-## Shared cache
-
-Both sources use one `localStorage` entry per browser, a Web Lock so only one tab fetches, and an in-flight marker.
-
-| Entry | Key | Holds |
-|---|---|---|
-| Run log | `lab.usage-limits.runlog.v1` | newest event, company, last scan time, reason when nothing was found |
-| Quota windows | `lab.usage-limits.quota.v1` | last response, last good windows per provider, failure count, next fetch time |
+The quota-windows route uses one `localStorage` entry per browser (`lab.usage-limits.quota.v1`), a Web Lock so only one tab fetches, and an in-flight marker. It holds the last response, last good windows per provider, failure count and next fetch time.
 
 ## How it works
 
 | Part | Does |
 |---|---|
-| `src/worker.ts` | Data handler `used-providers`: lists company agents (`agents.read`), returns used providers and agent IDs per provider. |
-| `src/runlog.ts` | Run-log parser, bounded run scan and run-log cache decisions. Unit-tested. |
+| `src/worker.ts` | Data handlers `used-providers` (lists company agents, `agents.read`) and `claude-usage`. |
+| `src/claude-usage.ts` | Claude usage: shared cache file, lock, usage API call, 429 handling. Unit-tested. |
 | `src/rows.ts` | Row model and formatter: `X% Y% reset`, hover title, reset-since handling, source choice. Unit-tested. |
 | `src/mapping.ts` | Quota-windows response → panels (stale data, Codex label fix, `$0` credits). Unit-tested. |
 | `src/cache.ts` | Quota-windows fetch/backoff decisions. Unit-tested. |
 | `src/ui/index.tsx` | Sidebar rows. |
-| `src/ui/runlog-store.ts`, `src/ui/store.ts`, `src/ui/shared-store.ts` | Browser caches; call the board routes with the signed-in board session. |
+| `src/ui/store.ts`, `src/ui/shared-store.ts` | Codex quota-windows browser cache; calls the board route with the signed-in board session. |
 | `src/ui/icons.tsx` | Claude and Codex marks, the host's own `/brands` artwork (Lobe Icons, MIT). |
 
-The plugin keeps no credentials and calls no provider API itself.
+The worker calls one provider API itself: the Anthropic usage API, with the Claude Code token from `.credentials.json` (capability `http.outbound`). The plugin stores no credentials.
 
 ## Build and check
 
@@ -83,7 +77,7 @@ Run it from a fresh worktree or clone at `origin/main` (root `README.md` → "Ru
 **Then, on a first install:**
 
 1. Open http://127.0.0.1:3100 → company settings → instance → **Plugin Manager** (`/company/settings/instance/plugins`).
-2. If the plugin is not `ready`, open **Review** and approve `agents.read` and `ui.sidebar.register`.
+2. If the plugin is not `ready`, open **Review** and approve `agents.read`, `http.outbound` and `ui.sidebar.register`.
 3. Open any company. The usage rows show in the sidebar nav, after Projects.
 
 - **Check after an update:** reload any company page. The usage rows in the sidebar show values, not an error.

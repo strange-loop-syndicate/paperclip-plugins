@@ -95,22 +95,6 @@ export const WARN_PERCENT = 75;
 export const CRITICAL_PERCENT = 90;
 
 /**
- * IDs of non-terminated agents per provider slug, e.g. the `claude_local`
- * agents whose run logs carry Claude's limits.
- */
-export function agentIdsByProvider(
-  agents: ReadonlyArray<{ id?: string | null; adapterType?: string | null; status?: string | null }>,
-): Record<string, string[]> {
-  const out: Record<string, string[]> = {};
-  for (const agent of agents) {
-    if (agent.status === "terminated" || !agent.id) continue;
-    const info = agent.adapterType ? ADAPTER_PROVIDERS[agent.adapterType] : undefined;
-    if (info) (out[info.slug] ??= []).push(agent.id);
-  }
-  return out;
-}
-
-/**
  * Providers used by at least one non-terminated agent, in a stable order.
  * Agents on adapters without quota windows are ignored.
  */

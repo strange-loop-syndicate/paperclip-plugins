@@ -1,0 +1,31 @@
+{
+ "t0": "2026-10-27T05:14:33.987Z",
+ "cacheMtimeBefore": "2026-10-27T05:12:59.819Z",
+ "cacheMtimeAfter": "2026-10-27T05:14:34.675Z",
+ "plugin": {
+  "fiveHour": {
+   "utilization": 4,
+   "resetsAt": 1793078999662
+  },
+  "sevenDay": {
+   "utilization": 16,
+   "resetsAt": 1793429999662
+  },
+  "asOf": "2026-10-27T05:14:33.000Z",
+  "account": "oleg@thegrid.id",
+  "reason": null
+ },
+ "statusLineFile": {
+  "timestamp": "2026-10-27T05:14:33Z",
+  "session": {
+   "percent_used": 4,
+   "percent_remaining": 96,
+   "resets_at": "2026-10-27T05:29:59.662641+00:00"
+  },
+  "week_all": {
+   "percent_used": 16,
+   "percent_remaining": 84,
+   "resets_at": "2026-10-31T06:59:59.662662+00:00"
+  }
+ }
+}

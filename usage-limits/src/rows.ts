@@ -1,7 +1,7 @@
 // One sidebar row per used provider: "10% 83% 2:14" = 5-hour used,
 // weekly used, time to the next reset. Pure, so `node --test` can load it.
 
-import type { RateLimitSnapshot } from "./runlog.ts";
+import type { ClaudeUsage } from "./claude-usage.ts";
 import { formatAsOf, formatDuration, type ProviderInfo, type ProviderPanel } from "./mapping.ts";
 
 export interface UsageWindow {
@@ -13,7 +13,7 @@ export interface UsageWindow {
   resetSince: boolean;
 }
 
-export type RowSource = "run-log" | "quota-windows";
+export type RowSource = "claude-usage-api" | "quota-windows";
 
 export interface UsageRow {
   slug: string;
@@ -23,6 +23,8 @@ export interface UsageRow {
   /** When the data was read (ms epoch); null when there is none. */
   asOf: number | null;
   source: RowSource | null;
+  /** Signed-in account, when the source names it (Claude). */
+  account?: string | null;
   /** Why the data is missing or old; for the hover title only. */
   reason: string | null;
 }
@@ -47,20 +49,22 @@ export function hasKnownWindow(row: UsageRow | null | undefined): boolean {
   return Boolean(row && (row.fiveHour?.percent != null || row.weekly?.percent != null));
 }
 
-/** Claude row from the newest `rate_limit_event` in the run logs. */
-export function rowFromSnapshot(info: ProviderInfo, snap: RateLimitSnapshot | null, now: number, reason: string | null = null): UsageRow {
-  if (!snap) {
-    return { slug: info.slug, label: info.label, fiveHour: null, weekly: null, asOf: null, source: null, reason };
-  }
-  const win = (w: RateLimitSnapshot["fiveHour"]) => (w ? windowAt(w.utilization, w.resetsAt, now) : null);
+/**
+ * Claude row from the worker's usage-API reading. A reading kept after a
+ * failed refresh keeps its percent (with the reason) until its window resets.
+ */
+export function rowFromClaudeUsage(info: ProviderInfo, usage: ClaudeUsage, now: number): UsageRow {
+  const win = (w: ClaudeUsage["fiveHour"]) => (w ? windowAt(w.utilization, w.resetsAt, now) : null);
+  const known = usage.asOf !== null && Boolean(usage.fiveHour || usage.sevenDay);
   return {
     slug: info.slug,
     label: info.label,
-    fiveHour: win(snap.fiveHour),
-    weekly: win(snap.sevenDay),
-    asOf: snap.at,
-    source: "run-log",
-    reason: null,
+    fiveHour: known ? win(usage.fiveHour) : null,
+    weekly: known ? win(usage.sevenDay) : null,
+    asOf: known ? usage.asOf : null,
+    source: known ? "claude-usage-api" : null,
+    account: usage.account,
+    reason: usage.reason,
   };
 }
 
@@ -98,21 +102,6 @@ export function rowFromPanel(panel: ProviderPanel, now: number): UsageRow {
     source: known ? "quota-windows" : null,
     reason: panel.state === "ok" ? (known ? null : "No 5-hour or weekly window reported") : panel.message,
   };
-}
-
-/**
- * Claude: the run-log row when it has a known value, else the quota-windows
- * row when that has one, else whichever explains the gap.
- */
-export function pickRow(fromLog: UsageRow | null, fromQuota: UsageRow | null): UsageRow | null {
-  if (hasKnownWindow(fromLog)) return fromLog;
-  if (hasKnownWindow(fromQuota)) return fromQuota;
-  if (fromLog && fromLog.source) return fromLog;
-  if (fromLog && fromQuota) {
-    const reasons = [fromLog.reason, fromQuota.reason ? `usage API: ${fromQuota.reason}` : null].filter(Boolean);
-    return { ...fromLog, reason: reasons.join("; ") || null };
-  }
-  return fromLog ?? fromQuota;
 }
 
 function percentText(w: UsageWindow | null): string {
@@ -156,7 +145,7 @@ function windowLine(name: string, w: UsageWindow | null, now: Date): string {
 }
 
 const SOURCE_TEXT: Record<RowSource, string> = {
-  "run-log": "latest Claude run log",
+  "claude-usage-api": "Anthropic usage API",
   "quota-windows": "usage API",
 };
 
@@ -164,6 +153,7 @@ const SOURCE_TEXT: Record<RowSource, string> = {
 export function rowTitle(row: UsageRow, now: number): string {
   const nowDate = new Date(now);
   const lines = [`${row.label} usage limits`];
+  if (row.account) lines.push(`Account: ${row.account}`);
   if (hasKnownWindow(row) || row.source) {
     lines.push(windowLine("5-hour window", row.fiveHour, nowDate));
     lines.push(windowLine("Weekly window", row.weekly, nowDate));
