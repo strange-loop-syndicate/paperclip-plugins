@@ -2,13 +2,15 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import { useHostContext, usePluginData } from "@paperclipai/plugin-sdk/ui";
 import { BASE_INTERVAL_MS, retryAt } from "../cache.ts";
 import { buildPanels, type ProviderInfo } from "../mapping.ts";
-import { hasKnownWindow, pickRow, rowFromPanel, rowFromSnapshot, rowText, rowTitle, type UsageRow } from "../rows.ts";
+import type { ClaudeUsage } from "../claude-usage.ts";
+import { hasKnownWindow, rowFromClaudeUsage, rowFromPanel, rowText, rowTitle, type UsageRow } from "../rows.ts";
 import { GaugeIcon, ProviderIcon } from "./icons.tsx";
-import { getRunLogSnapshot, refreshRunLog, subscribeRunLog } from "./runlog-store.ts";
 import { getSnapshot, refresh, subscribe } from "./store.ts";
 
 /** How often each tab re-checks the shared caches; a fetch happens only when one is due. */
 const TICK_MS = 30_000;
+/** Claude: ask the worker once a minute. It polls the API only when usage-exact.json is 60 s old. */
+const CLAUDE_TICK_MS = 60_000;
 
 /**
  * The host's own sidebar nav item classes (`SidebarNavItem`), minus the link
@@ -26,7 +28,6 @@ const LIST_CLASS = "flex flex-col gap-0.5";
 
 interface UsedProvidersData {
   providers: ProviderInfo[];
-  agentIds?: Record<string, string[]>;
 }
 
 export interface RowView {
@@ -40,14 +41,14 @@ export type UsageLimitsViewProps =
   | { kind: "error"; message: string }
   | { kind: "rows"; rows: RowView[] };
 
-function useTicker(active: boolean, onTick: () => void, deps: unknown[]) {
+function useTicker(active: boolean, onTick: () => void, deps: unknown[], intervalMs = TICK_MS) {
   useEffect(() => {
     if (!active) return;
     const tick = () => {
       if (document.visibilityState === "visible") onTick();
     };
     tick();
-    const timer = setInterval(tick, TICK_MS);
+    const timer = setInterval(tick, intervalMs);
     document.addEventListener("visibilitychange", tick);
     return () => {
       clearInterval(timer);
@@ -56,14 +57,17 @@ function useTicker(active: boolean, onTick: () => void, deps: unknown[]) {
   }, [active, ...deps]);
 }
 
-/** Build the row views from both caches. Exported for the static preview. */
+function claudeUnavailable(reason: string): ClaudeUsage {
+  return { fiveHour: null, sevenDay: null, asOf: null, account: null, reason };
+}
+
+/** Build the row views from the Claude reading and the quota cache. Exported for the static preview. */
 export function buildRowViews(
   used: ReadonlyArray<ProviderInfo>,
-  runLog: ReturnType<typeof getRunLogSnapshot>,
+  claude: { data: ClaudeUsage | null; error: string | null },
   quota: ReturnType<typeof getSnapshot>,
-  companyId: string,
   now: number,
-): { rows: RowView[]; claudeNeedsQuota: boolean } {
+): RowView[] {
   const panels = quota
     ? buildPanels(
         used,
@@ -78,21 +82,18 @@ export function buildRowViews(
       )
     : [];
   const quotaLoaded = Boolean(quota && (quota.fetchedAt !== null || quota.fetchError !== null));
-  const log = runLog && runLog.companyId === companyId ? runLog : null;
-  let claudeNeedsQuota = false;
 
-  const rows = used.map((info): RowView => {
-    const panel = panels.find((p) => p.slug === info.slug);
-    const fromQuota = panel && quotaLoaded ? rowFromPanel(panel, now) : null;
+  return used.map((info): RowView => {
     let row: UsageRow | null;
     let loading: boolean;
     if (info.slug === "anthropic") {
-      const fromLog = log?.checkedAt != null ? rowFromSnapshot(info, log.snapshot, now, log.error) : null;
-      claudeNeedsQuota = Boolean(fromLog) && !hasKnownWindow(fromLog);
-      row = pickRow(fromLog, claudeNeedsQuota ? fromQuota : null);
-      loading = !fromLog || (claudeNeedsQuota && !quotaLoaded && !log?.snapshot);
+      // A failed worker call is a row with no data, unknown account and the error as its reason.
+      const usage = claude.data ?? (claude.error ? claudeUnavailable(claude.error) : null);
+      row = usage ? rowFromClaudeUsage(info, usage, now) : null;
+      loading = !usage;
     } else {
-      row = fromQuota;
+      const panel = panels.find((p) => p.slug === info.slug);
+      row = panel && quotaLoaded ? rowFromPanel(panel, now) : null;
       loading = !quotaLoaded;
     }
     if (!row || (loading && !hasKnownWindow(row))) {
@@ -100,7 +101,6 @@ export function buildRowViews(
     }
     return { slug: info.slug, text: rowText(row, now), title: rowTitle(row, now) };
   });
-  return { rows, claudeNeedsQuota };
 }
 
 /** Sidebar rows: provider icon + "5h% weekly% next-reset", one per used provider. */
@@ -108,8 +108,8 @@ export function UsageLimitsSidebar() {
   const { companyId } = useHostContext();
   const providersData = usePluginData<UsedProvidersData>("used-providers", { companyId: companyId ?? undefined });
   const used = providersData.data?.providers ?? [];
-  const claudeIds = providersData.data?.agentIds?.anthropic ?? [];
-  const runLog = useSyncExternalStore(subscribeRunLog, getRunLogSnapshot, () => null);
+  const usesClaude = used.some((p) => p.slug === "anthropic");
+  const claudeData = usePluginData<ClaudeUsage>("claude-usage", { companyId: companyId ?? undefined });
   const quota = useSyncExternalStore(subscribe, getSnapshot, () => null);
   const [now, setNow] = useState(() => Date.now());
 
@@ -123,21 +123,15 @@ export function UsageLimitsSidebar() {
     return () => clearInterval(timer);
   }, [companyId, refreshProviders]);
 
-  const claudeKey = claudeIds.join(",");
-  useTicker(Boolean(companyId) && claudeIds.length > 0, () => {
+  // Claude: the worker reads the shared usage-exact.json, or refreshes it when 60 s old.
+  const refreshClaude = claudeData.refresh;
+  useTicker(Boolean(companyId) && usesClaude, () => {
     setNow(Date.now());
-    void refreshRunLog(companyId as string, claudeKey.split(","));
-  }, [companyId, claudeKey]);
+    refreshClaude();
+  }, [companyId, refreshClaude], CLAUDE_TICK_MS);
 
-  const { rows, claudeNeedsQuota } = companyId
-    ? buildRowViews(used, runLog, quota, companyId, now)
-    : { rows: [], claudeNeedsQuota: false };
-
-  // Quota windows: Codex always, Claude only as a fallback. Each call of that
-  // route also polls Anthropic, so skip it when nothing needs it.
-  const needed = used
-    .map((p) => p.slug)
-    .filter((slug) => slug === "openai" || (slug === "anthropic" && claudeNeedsQuota));
+  // Quota windows: Codex only. Each call of that route also polls the provider.
+  const needed = used.map((p) => p.slug).filter((slug) => slug === "openai");
   const neededKey = needed.join(",");
   useTicker(Boolean(companyId) && needed.length > 0, () => {
     setNow(Date.now());
@@ -146,6 +140,12 @@ export function UsageLimitsSidebar() {
 
   if (!companyId) return null;
   if (providersData.error) return <UsageLimitsView kind="error" message={providersData.error.message} />;
+  const rows = buildRowViews(
+    used,
+    { data: claudeData.data ?? null, error: claudeData.error ? claudeData.error.message : null },
+    quota,
+    now,
+  );
   if (rows.length === 0) return <UsageLimitsView kind="hidden" />;
   return <UsageLimitsView kind="rows" rows={rows} />;
 }

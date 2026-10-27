@@ -25,28 +25,26 @@ const NOW = Date.parse("2026-10-23T18:46:00.000Z");
 const MIN = 60000, HOUR = 60 * MIN;
 const CLAUDE = { slug: "anthropic", label: "Claude" };
 const CODEX = { slug: "openai", label: "Codex" };
-const COMPANY = "c1";
 
-// Newest rate_limit_event found in the lab run logs on 2026-10-23 (smoke run).
-const realSnap = { at: Date.parse("2026-10-23T18:44:01.913Z"), status: "allowed_warning",
-  fiveHour: { utilization: 11, resetsAt: 1792795200000 }, sevenDay: { utilization: 83, resetsAt: 1792832400000 } };
-const runLog = (snapshot, error = null) => ({ v: 1, companyId: COMPANY, attemptAt: NOW - MIN, inFlightUntil: 0,
-  checkedAt: NOW - MIN, snapshot, error });
+// Claude as the usage API reported it for the active account (usage-exact.json, 2026-10-27).
+const claudeOk = { data: { fiveHour: { utilization: 1, resetsAt: NOW + 43 * MIN }, sevenDay: { utilization: 16, resetsAt: NOW + 3 * 24 * HOUR + 16 * HOUR },
+  asOf: NOW - MIN, account: "oleg@thegrid.id", reason: null }, error: null };
 // Codex as the owner's account reports it: primary window is weekly, plus $0 credits.
 const quota = (results) => ({ v: 1, lastAttemptAt: NOW - MIN, inFlightUntil: 0, fetchedAt: NOW - MIN, results,
   fetchError: null, lastGood: {}, failures: 0, nextAt: NOW + 4 * MIN });
 const codexOk = { provider: "openai", ok: true, windows: [
   { label: "5h limit", usedPercent: 3, resetsAt: new Date(NOW + 6 * 24 * HOUR + 2 * HOUR).toISOString(), valueLabel: null },
   { label: "Credits", usedPercent: null, resetsAt: null, valueLabel: "$0.00 remaining" } ] };
-const claude429 = { provider: "anthropic", ok: false, windows: [], error: "anthropic usage api returned 429" };
 const codex429 = { provider: "openai", ok: false, windows: [], error: "chatgpt wham api returned 429" };
 
-const rowsView = (rl, q) => ({ kind: "rows", rows: buildRowViews([CLAUDE, CODEX], rl, q, COMPANY, NOW).rows });
+const rowsView = (claude, q) => ({ kind: "rows", rows: buildRowViews([CLAUDE, CODEX], claude, q, NOW) });
 export const cases = [
-  ["Live data (Claude from run log, Codex from usage API)", rowsView(runLog(realSnap), quota([claude429, codexOk]))],
-  ["Claude event older than its 5-hour reset", rowsView(runLog({ ...realSnap, at: NOW - 6 * HOUR,
-    fiveHour: { utilization: 95, resetsAt: NOW - HOUR } }), quota([claude429, codexOk]))],
-  ["No data anywhere", rowsView(runLog(null, "No rate_limit_event in recent Claude run logs"), quota([claude429, codex429]))],
+  ["Live data (Claude and Codex from their usage APIs)", rowsView(claudeOk, quota([codexOk]))],
+  ["Claude reading older than its 5-hour reset, kept after a 429", rowsView({ ...claudeOk, data: { ...claudeOk.data, asOf: NOW - 6 * HOUR,
+    fiveHour: { utilization: 95, resetsAt: NOW - HOUR }, reason: "Usage API throttled (429)" } }, quota([codexOk]))],
+  ["No data anywhere", rowsView({ data: { fiveHour: null, sevenDay: null, asOf: null, account: null,
+    reason: "No Claude credentials file (~/.claude/.credentials.json); sign in with Claude Code" }, error: null }, quota([codex429]))],
+  ["Claude worker call failed, account unknown", rowsView({ data: null, error: "worker not ready" }, quota([codexOk]))],
   ["Provider list failed", { kind: "error", message: "worker not ready" }],
 ];
 export const render = (view) => renderToStaticMarkup(createElement(UsageLimitsView, view));

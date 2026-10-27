@@ -1,0 +1,26 @@
+{
+ "readAt": "2026-10-27T05:20:28.742Z",
+ "rowText": "4% 16% 0:10",
+ "tip": [
+  "Claude usage limits",
+  "Account: oleg@thegrid.id",
+  "5-hour window: 4% used, resets in 10m (09:29)",
+  "Weekly window: 16% used, resets in 4d 1h (10/31 10:59)",
+  "Source: Anthropic usage API, as of 09:14",
+  "Note: Usage API throttled (429), retry after 3600 s"
+ ],
+ "statusLineFile": {
+  "mtime": "2026-10-27T05:14:34.675Z",
+  "timestamp": "2026-10-27T05:14:33Z",
+  "session": {
+   "percent_used": 4,
+   "percent_remaining": 96,
+   "resets_at": "2026-10-27T05:29:59.662641+00:00"
+  },
+  "week_all": {
+   "percent_used": 16,
+   "percent_remaining": 84,
+   "resets_at": "2026-10-31T06:59:59.662662+00:00"
+  }
+ }
+}
