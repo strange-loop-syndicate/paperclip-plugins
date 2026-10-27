@@ -6,7 +6,7 @@
 // the host, and every handler swallows its own errors.
 
 import { definePlugin } from "@paperclipai/plugin-sdk";
-import { createCapture, withTimeout } from "./capture.js";
+import { createCapture, screenMemories, withTimeout } from "./capture.js";
 import { contentHash, normalizeContent } from "./content.js";
 import { createExtractor, EXTRACT_MODEL, EXTRACT_TIMEOUT_MS } from "./extractor.js";
 import { formatMemoryLine } from "./format.js";
@@ -24,6 +24,15 @@ const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 // that and leaves the rest to the retry job.
 export const EVENT_BUDGET_MS = 25000;
 const RETRY_JOB_BUDGET_MS = 4 * 60 * 1000;
+// A stored memory this similar (MemOS search relativity, a cosine) to a new
+// one makes the new one a duplicate. Tuned on the Ops cube in SLS-200: pairs
+// at 0.83-0.88 were mostly the same fact in other words.
+export const DEFAULT_DUP_SIMILARITY = 0.85;
+// The dry-run route: items per call, and per company and UTC day. Each item
+// costs one or two OpenRouter calls.
+export const DRY_RUN_MAX_ITEMS = 10;
+export const DRY_RUN_MAX_PER_DAY = 3000;
+const DRY_RUN_KEY = (companyId, day) => ({ scopeKind: "company", scopeId: companyId, namespace: "memos-dryrun", stateKey: day });
 export const RETRY_JOB_KEY = "retry-pending-captures";
 // The host allows 30 secret resolves a minute per company and plugin, and
 // loadConfig runs on every event. Resolved keys stay in worker memory only:
@@ -98,6 +107,7 @@ export function createMemoryPlugin({ fetchImpl = (url, init) => globalThis.fetch
     const llmKey = await resolveSecret(ctx, companyId, "openrouterApiKeyRef", raw.openrouterApiKeyRef, "OpenAI key (openrouterApiKeyRef)");
     const base = (typeof raw.openrouterBaseUrl === "string" && raw.openrouterBaseUrl.trim() ? raw.openrouterBaseUrl : OPENROUTER_BASE_URL).replace(/\/+$/, "");
     const captureProjectIds = Array.isArray(raw.captureProjectIds) ? raw.captureProjectIds.filter((p) => typeof p === "string" && p !== "") : [];
+    const protectTerms = Array.isArray(raw.protectTerms) ? raw.protectTerms.filter((t) => typeof t === "string" && t.trim().length >= 2) : [];
     return {
       companyId,
       client: createMemosClient({ baseUrl: raw.memosBaseUrl, fetchImpl, logger: ctx.logger }),
@@ -110,9 +120,10 @@ export function createMemoryPlugin({ fetchImpl = (url, init) => globalThis.fetch
       captureMode: raw.captureMode === "save" ? "save" : "shadow",
       saveP: prob(raw.saveP, DEFAULT_SAVE_P),
       routineP: prob(raw.routineP, DEFAULT_ROUTINE_P),
+      dupSimilarity: prob(raw.dupSimilarity, DEFAULT_DUP_SIMILARITY),
       llmConfigured: Boolean(llmKey),
       jev: createJevClient({ apiKey: llmKey, fetchImpl, sleep, now, model: raw.jevModel || JEV_MODEL, url: `${base}/systemone`, timeoutMs: num(raw.jevTimeoutMs, JEV_TIMEOUT_MS) }),
-      extractor: createExtractor({ apiKey: llmKey, fetchImpl, sleep, now, model: raw.extractModel || EXTRACT_MODEL, url: `${base}/chat/completions`, timeoutMs: num(raw.extractTimeoutMs, EXTRACT_TIMEOUT_MS) }),
+      extractor: createExtractor({ apiKey: llmKey, fetchImpl, sleep, now, model: raw.extractModel || EXTRACT_MODEL, url: `${base}/chat/completions`, timeoutMs: num(raw.extractTimeoutMs, EXTRACT_TIMEOUT_MS), protectTerms }),
       // An empty `captureProjectIds` captures every project; a list captures only those.
       captureAllowed: (projectId) => captureProjectIds.length === 0 || captureProjectIds.includes(projectId ?? UNSCOPED_PROJECT),
     };
@@ -158,6 +169,19 @@ export function createMemoryPlugin({ fetchImpl = (url, init) => globalThis.fetch
 
   const retainFor = (ctx) => (cfg) => (scope, content, metadata) => retain(ctx, cfg, { scope, content, metadata });
 
+  /**
+   * `{ similarity }` when the scope already holds `content` in other words
+   * (the best search hit reaches cfg.dupSimilarity), else null. A failed
+   * search returns no hits, so the memory counts as new.
+   */
+  function nearDuplicateFor(cfg) {
+    return async (scope, content) => {
+      const hits = await cfg.client.search({ scope, query: content, topK: 3, timeoutMs: cfg.captureTimeoutMs });
+      const best = Math.max(-1, ...hits.map((h) => Number(h.metadata?.relativity)).filter(Number.isFinite));
+      return best >= cfg.dupSimilarity ? { similarity: Math.round(best * 1000) / 1000 } : null;
+    };
+  }
+
   function safe(ctx, label, fn) {
     return async (event) => {
       try {
@@ -173,7 +197,7 @@ export function createMemoryPlugin({ fetchImpl = (url, init) => globalThis.fetch
   }
 
   async function capture1(ctx, cfg, item) {
-    return capture.processItem(ctx, cfg, { ...item, firstSeenAt: now() }, { retain: retainFor(ctx)(cfg), deadline: now() + EVENT_BUDGET_MS });
+    return capture.processItem(ctx, cfg, { ...item, firstSeenAt: now() }, { retain: retainFor(ctx)(cfg), nearDuplicate: nearDuplicateFor(cfg), deadline: now() + EVENT_BUDGET_MS });
   }
 
   async function onCommentCreated(ctx, event) {
@@ -310,6 +334,8 @@ export function createMemoryPlugin({ fetchImpl = (url, init) => globalThis.fetch
     if (!cfg.captureAllowed(runCtx.projectId)) {
       return { error: "Memory capture is off for this project; the memory was not stored.", data: { status: "rejected" } };
     }
+    const near = await nearDuplicateFor(cfg)(scope, content);
+    if (near) return { content: "Already stored in other words; nothing changed.", data: { status: "duplicate", similarity: near.similarity } };
     const res = await retain(ctx, cfg, {
       scope,
       content,
@@ -317,6 +343,67 @@ export function createMemoryPlugin({ fetchImpl = (url, init) => globalThis.fetch
     });
     const message = { stored: "Memory stored.", duplicate: "Already stored; nothing changed.", failed: "Memory service unavailable; the memory was not stored." }[res.status];
     return { content: message, data: res };
+  }
+
+  // ---- dry run: the capture rules on chosen items, nothing stored ----
+
+  /** Count `n` items against today's dry-run budget; false when it is spent. */
+  async function takeDryRunBudget(ctx, companyId, n) {
+    const key = DRY_RUN_KEY(companyId, new Date(now()).toISOString().slice(0, 10));
+    const used = (await ctx.state.get(key))?.items ?? 0;
+    if (used + n > DRY_RUN_MAX_PER_DAY) return false;
+    await ctx.state.set(key, { items: used + n });
+    return true;
+  }
+
+  /** Re-judge one stored memory's text with today's extractor rules. */
+  async function judgeMemory(cfg, { id, text }, deadline) {
+    try {
+      const extracted = await cfg.extractor.extract({ text, task: null, source: "stored memory", hintType: null }, { deadline });
+      const { kept, dropped } = screenMemories(extracted.memories);
+      return { id, verdict: kept.length ? "keep" : "delete", memories: kept, dropped, costUsd: extracted.costUsd };
+    } catch (err) {
+      return { id, verdict: "error", error: err.message };
+    }
+  }
+
+  /**
+   * POST /dry-run?companyId=…, body `{ comments: [{ issueId, commentId, source? }], dupCheck? }`
+   * or `{ memories: [{ id, text }] }`, at most DRY_RUN_MAX_ITEMS. Runs the
+   * capture rules (Jev, extractor, code check, and the duplicate search when
+   * `dupCheck`) and answers what a save would store. Stores, logs and marks
+   * nothing. The answer holds memory text from this company's comments only.
+   */
+  async function dryRun(ctx, input) {
+    const companyId = input.companyId;
+    const body = input.body && typeof input.body === "object" ? input.body : {};
+    const comments = Array.isArray(body.comments) ? body.comments : null;
+    const memories = Array.isArray(body.memories) ? body.memories : null;
+    if (!comments === !memories) return { status: 400, body: { error: "send either comments or memories" } };
+    const list = comments ?? memories;
+    if (list.length === 0 || list.length > DRY_RUN_MAX_ITEMS) return { status: 400, body: { error: `send 1 to ${DRY_RUN_MAX_ITEMS} items` } };
+    const cfg = await loadConfig(ctx, companyId);
+    if (!captureReady(cfg)) return { status: 503, body: { error: "capture is not configured for this company" } };
+    if (!(await takeDryRunBudget(ctx, companyId, list.length))) return { status: 429, body: { error: `dry-run budget of ${DRY_RUN_MAX_PER_DAY} items a day is spent` } };
+    const deadline = now() + EVENT_BUDGET_MS;
+    if (memories) {
+      const valid = (m) => typeof m?.text === "string" && m.text.trim().length > 0;
+      const results = await Promise.all(memories.map((m) => (valid(m) ? judgeMemory(cfg, { id: m.id ?? null, text: m.text }, deadline) : { id: m?.id ?? null, verdict: "error", error: "no text" })));
+      return { status: 200, body: { results } };
+    }
+    const nearDuplicate = body.dupCheck === true ? nearDuplicateFor(cfg) : null;
+    const results = await Promise.all(
+      comments.map(async (c) => {
+        const ref = { issueId: c?.issueId ?? null, commentId: c?.commentId ?? null };
+        if (typeof ref.issueId !== "string" || typeof ref.commentId !== "string") return { ...ref, verdict: "invalid" };
+        const item = { key: commentItemKey(ref.commentId), companyId, ...ref, source: c.source === "run" ? "run" : "comment" };
+        const r = await capture.evaluate(ctx, cfg, item, { nearDuplicate, deadline });
+        if (r.defer) return { ...ref, verdict: "deferred", error: r.defer };
+        if (r.ignored) return { ...ref, verdict: "ignored" };
+        return { ...r.record, ...ref };
+      }),
+    );
+    return { status: 200, body: { results } };
   }
 
   // ---- API routes ----
@@ -333,6 +420,7 @@ export function createMemoryPlugin({ fetchImpl = (url, init) => globalThis.fetch
       const pending = (await capture.readPending(ctx)).filter((q) => q.companyId === input.companyId);
       return { status: 200, body: { date: day, entries, pending } };
     }
+    if (input.routeKey === "dry-run") return dryRun(ctx, input);
     return { status: 404, body: { error: "unknown route" } };
   }
 
@@ -358,7 +446,7 @@ export function createMemoryPlugin({ fetchImpl = (url, init) => globalThis.fetch
           if (!configs.has(companyId)) configs.set(companyId, await loadConfig(ctx, companyId));
           return configs.get(companyId);
         };
-        const summary = await capture.retryPending(ctx, { configFor, retainFor: retainFor(ctx), deadline: now() + RETRY_JOB_BUDGET_MS });
+        const summary = await capture.retryPending(ctx, { configFor, retainFor: retainFor(ctx), nearDuplicateFor, deadline: now() + RETRY_JOB_BUDGET_MS });
         if (summary.retried || summary.dropped) ctx.logger.info("memory capture retry job", summary);
       });
 

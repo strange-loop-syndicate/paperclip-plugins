@@ -88,6 +88,8 @@ const api = (h, routeKey, query, companyId = A) => h.plugin.definition.onApiRequ
 function resetServer(server) {
   server.state.mode = "ok";
   server.state.addMode = "ok";
+  server.state.searchMode = "ok";
+  server.state.similarity = null;
   server.state.store.length = 0;
   server.state.requests.length = 0;
   server.state.llm.mode = "ok";
@@ -862,5 +864,231 @@ describe("plugin fails open", () => {
     } finally {
       await fake.close();
     }
+  });
+});
+
+const LESSON = "Restarting the Paperclip server stops every agent run in progress.";
+const shadowEntries = async (h) => (await api(h, "shadow-log", { date: "2026-10-24" })).body.entries;
+const dryRun = (h, body, { companyId = A, actor = { actorType: "agent", actorId: "agent-1" } } = {}) =>
+  h.plugin.definition.onApiRequest({ routeKey: "dry-run", method: "POST", path: "/dry-run", params: {}, query: { companyId }, body, actor, companyId, headers: {} });
+const extractUserText = (b) => b.messages.find((m) => m.role === "user").content;
+
+describe("capture: durable memories only (SLS-200)", () => {
+  let server;
+  before(async () => (server = await startFakeServer()));
+  after(() => server.close());
+  beforeEach(() => resetServer(server));
+
+  it("drops task logs and task status after the extractor, and logs why without memory text", async () => {
+    server.state.llm.memories = [
+      { type: "outcome", text: "The context layer patch was merged as commit b7df3b51 after review." },
+      { type: "fact", text: "The upgrade task stays blocked until the server restart finishes." },
+      { type: "lesson", text: LESSON },
+    ];
+    const now = clock();
+    const h = await setup(server, {}, {}, { now });
+    await h.emit("issue.comment.created", ...commentEvent());
+    assert.deepEqual(adds(server).map((r) => r.body.memory_content), [LESSON]);
+    const [entry] = await shadowEntries(h);
+    assert.equal(entry.verdict, "pass");
+    assert.deepEqual(entry.memoryTypes, ["lesson"]);
+    assert.deepEqual(entry.dropped, [
+      { type: "outcome", reason: "commit-hash" },
+      { type: "fact", reason: "task-status" },
+    ]);
+    assert.doesNotMatch(JSON.stringify(entry), /b7df3b51|server restart/);
+  });
+
+  it("an item whose memories are all noise is a noise verdict: nothing stored, nothing waits", async () => {
+    server.state.llm.memories = [{ type: "outcome", text: "Tests pass at 26/26 on the patch branch." }];
+    const now = clock();
+    const h = await setup(server, {}, {}, { now });
+    await h.emit("issue.comment.created", ...commentEvent());
+    assert.equal(adds(server).length, 0);
+    assert.deepEqual((await shadowEntries(h)).map((e) => e.verdict), ["noise"]);
+    assert.deepEqual(pendingOf(h), []);
+    await h.emit("issue.comment.created", ...commentEvent({ eventId: "evt-again" }));
+    assert.equal(jevCalls(server).length, 1, "the item is marked done");
+  });
+
+  it("drops a memory that names a task of this company, not one that names UTF-8", async () => {
+    server.state.llm.memories = [
+      { type: "fact", text: "The upgrade plan is tracked on SLS-186 for the Paperclip host." },
+      { type: "fact", text: "Comment bodies reach the plugin as UTF-8 Markdown source." },
+    ];
+    const h = await setup(server);
+    await h.emit("issue.comment.created", ...commentEvent());
+    assert.deepEqual(adds(server).map((r) => r.body.memory_content), ["Comment bodies reach the plugin as UTF-8 Markdown source."]);
+  });
+
+  it("drops a memory that still holds a provider redaction label", async () => {
+    server.state.llm.memories = [{ type: "decision", text: "Plugin deletes need approval from [PERSON_NAME] on the review task." }];
+    const now = clock();
+    const h = await setup(server, {}, {}, { now });
+    await h.emit("issue.comment.created", ...commentEvent());
+    assert.equal(adds(server).length, 0);
+    assert.deepEqual((await shadowEntries(h))[0].dropped, [{ type: "decision", reason: "redacted" }]);
+  });
+
+  it("sends paths, URLs and protected words as placeholders and stores them as written", async () => {
+    const body = "Lesson: never run npm install in /Users/claude/work/paperclip-plugins-repo while Oleg's server at http://127.0.0.1:3100/api runs.";
+    server.state.llm.memories = (b) => {
+      const text = extractUserText(b);
+      const tokens = text.match(/\{\{P\d+\}\}/g) ?? [];
+      return [{ type: "lesson", text: `Never run npm install in ${tokens[0]} while ${tokens[1]}'s server at ${tokens[2]} runs.` }];
+    };
+    const h = await setup(server, { protectTerms: ["Oleg"] }, { issueComments: [comment({ body })] });
+    await h.emit("issue.comment.created", ...commentEvent());
+    const sent = extractUserText(extractCalls(server)[0].body);
+    assert.doesNotMatch(sent, /\/Users\/claude|Oleg|127\.0\.0\.1/);
+    assert.deepEqual(adds(server).map((r) => r.body.memory_content), ["Never run npm install in /Users/claude/work/paperclip-plugins-repo while Oleg's server at http://127.0.0.1:3100/api runs."]);
+  });
+
+  it("gives the extractor the task title but not the task ID", async () => {
+    const h = await setup(server);
+    await h.emit("issue.comment.created", ...commentEvent());
+    const sent = extractUserText(extractCalls(server)[0].body);
+    assert.match(sent, /Task title: Build memory/);
+    assert.doesNotMatch(sent, /SLS-1/);
+  });
+
+  it("skips a memory the scope already holds in other words, and logs it as a duplicate", async () => {
+    seedMemory(server.state, { companyId: A, projectId: "p1", content: "Recall runs before the prompt, inside a wrapper command." });
+    server.state.similarity = (query, content) => (content.startsWith("Recall runs before") ? 0.86 : 0.2);
+    const now = clock();
+    const h = await setup(server, {}, {}, { now });
+    await h.emit("issue.comment.created", ...commentEvent());
+    assert.equal(adds(server).length, 0);
+    const [entry] = await shadowEntries(h);
+    assert.equal(entry.verdict, "duplicate");
+    assert.deepEqual(entry.duplicates, [{ type: "decision", similarity: 0.86 }]);
+    const search = server.memosRequests().find((r) => r.path === "/product/search").body;
+    assert.equal(search.mem_cube_id, `paperclip-${A}-p1`);
+    assert.equal(search.query, MEMORY);
+  });
+
+  it("stores a memory below the duplicate threshold, and honours a configured one", async () => {
+    seedMemory(server.state, { companyId: A, projectId: "p1", content: "Recall runs before the prompt, inside a wrapper command." });
+    server.state.similarity = () => 0.84;
+    const h = await setup(server);
+    await h.emit("issue.comment.created", ...commentEvent());
+    assert.equal(adds(server).length, 1);
+    resetServer(server);
+    seedMemory(server.state, { companyId: A, projectId: "p1", content: "Recall runs before the prompt, inside a wrapper command." });
+    server.state.similarity = () => 0.84;
+    const strict = await setup(server, { dupSimilarity: 0.8 });
+    await strict.emit("issue.comment.created", ...commentEvent());
+    assert.equal(adds(server).length, 0);
+  });
+
+  it("only searches the item's own scope: a near match in another project is not a duplicate", async () => {
+    seedMemory(server.state, { companyId: A, projectId: "p2", content: MEMORY });
+    const h = await setup(server);
+    await h.emit("issue.comment.created", ...commentEvent());
+    assert.equal(adds(server).length, 1);
+  });
+
+  it("a failed duplicate search stores the memory (fails open)", async () => {
+    server.state.searchMode = "error500";
+    const h = await setup(server);
+    await h.emit("issue.comment.created", ...commentEvent());
+    assert.equal(adds(server).length, 1);
+  });
+
+  it("shadow mode runs the duplicate search too and logs the duplicate with its text", async () => {
+    seedMemory(server.state, { companyId: A, projectId: "p1", content: MEMORY });
+    const now = clock();
+    const h = await setup(server, { captureMode: "shadow" }, {}, { now });
+    await h.emit("issue.comment.created", ...commentEvent());
+    const [entry] = await shadowEntries(h);
+    assert.equal(entry.verdict, "duplicate");
+    assert.deepEqual(entry.duplicates, [{ type: "decision", content: MEMORY, similarity: 1 }]);
+    assert.deepEqual(entry.memories, []);
+  });
+
+  it("memory_retain skips a memory the scope already holds in other words", async () => {
+    seedMemory(server.state, { companyId: A, projectId: "p1", content: "Recall runs before the prompt, inside a wrapper command." });
+    server.state.similarity = () => 0.9;
+    const h = await setup(server);
+    const res = await h.executeTool("memory_retain", { content: MEMORY, kind: "lesson" }, runCtx());
+    assert.equal(res.data.status, "duplicate");
+    assert.equal(adds(server).length, 0);
+  });
+});
+
+describe("dry-run route: the capture rules without saving", () => {
+  let server;
+  before(async () => (server = await startFakeServer()));
+  after(() => server.close());
+  beforeEach(() => resetServer(server));
+
+  it("answers what a save would store and stores, logs and marks nothing", async () => {
+    server.state.llm.memories = [
+      { type: "lesson", text: LESSON },
+      { type: "outcome", text: "The fix was merged and deployed on the lab host." },
+    ];
+    const now = clock();
+    const h = await setup(server, {}, {}, { now });
+    const res = await dryRun(h, { comments: [{ issueId: "iss-1", commentId: "c-1" }] });
+    assert.equal(res.status, 200);
+    const [r] = res.body.results;
+    assert.equal(r.verdict, "pass");
+    assert.equal(r.issueIdentifier, "SLS-1");
+    assert.deepEqual(r.memories, [{ type: "lesson", content: LESSON }]);
+    assert.deepEqual(r.dropped, [{ type: "outcome", content: "The fix was merged and deployed on the lab host.", reason: "task-outcome" }]);
+    assert.equal(adds(server).length, 0);
+    assert.equal(server.memosRequests().length, 0, "no duplicate search unless asked");
+    assert.deepEqual(await shadowEntries(h), []);
+    await h.emit("issue.comment.created", ...commentEvent());
+    assert.equal(adds(server).length, 1, "the real event still processes the item");
+  });
+
+  it("runs the duplicate search when asked", async () => {
+    seedMemory(server.state, { companyId: A, projectId: "p1", content: MEMORY });
+    const h = await setup(server);
+    const res = await dryRun(h, { comments: [{ issueId: "iss-1", commentId: "c-1" }], dupCheck: true });
+    assert.equal(res.body.results[0].verdict, "duplicate");
+  });
+
+  it("re-judges stored memory text: keep, or delete with the reason", async () => {
+    server.state.llm.memories = (b) => (/Restarting/.test(extractUserText(b)) ? [{ type: "lesson", text: LESSON }] : [{ type: "outcome", text: "PR #12 was merged." }]);
+    const h = await setup(server);
+    const res = await dryRun(h, { memories: [{ id: "m1", text: LESSON }, { id: "m2", text: "SLS-148 PR #12 merged as 6ac94fc." }] });
+    assert.deepEqual(
+      res.body.results.map((r) => [r.id, r.verdict, r.dropped.map((d) => d.reason)]),
+      [
+        ["m1", "keep", []],
+        ["m2", "delete", ["pr-number"]],
+      ],
+    );
+    assert.equal(jevCalls(server).length, 0, "stored text skips the Jev gate");
+    assert.equal(adds(server).length, 0);
+  });
+
+  it("refuses a bad body, a large batch, and a company without capture", async () => {
+    const h = await setup(server);
+    assert.equal((await dryRun(h, {})).status, 400);
+    assert.equal((await dryRun(h, { comments: [], memories: [] })).status, 400);
+    const eleven = Array.from({ length: 11 }, (_, i) => ({ id: `m${i}`, text: "x".repeat(20) }));
+    assert.equal((await dryRun(h, { memories: eleven })).status, 400);
+    assert.equal((await dryRun(h, { memories: [{ id: "m", text: LESSON }] }, { companyId: B })).status, 503);
+  });
+
+  it("an issue of another company is ignored, even when named directly", async () => {
+    const h = await setup(server, {}, { issues: [issue(), issue({ id: "iss-b", companyId: B })] });
+    const res = await dryRun(h, { comments: [{ issueId: "iss-b", commentId: "c-1" }] });
+    assert.deepEqual(res.body.results, [{ issueId: "iss-b", commentId: "c-1", verdict: "ignored" }]);
+    assert.equal(jevCalls(server).length, 0);
+  });
+
+  it("stops at the daily budget", async () => {
+    const now = clock();
+    const h = await setup(server, {}, {}, { now });
+    h.ctx.state.set({ scopeKind: "company", scopeId: A, namespace: "memos-dryrun", stateKey: "2026-10-24" }, { items: 2999 });
+    const two = [{ id: "a", text: LESSON }, { id: "b", text: LESSON }];
+    assert.equal((await dryRun(h, { memories: two })).status, 429);
+    assert.equal((await dryRun(h, { memories: [two[0]] })).status, 200);
+    now.advance(24 * 60 * 60 * 1000);
+    assert.equal((await dryRun(h, { memories: two })).status, 200, "a new UTC day has a new budget");
   });
 });

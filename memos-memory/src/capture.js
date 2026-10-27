@@ -1,13 +1,18 @@
 // Capture pipeline for one item (a comment, or a run's result comment):
 // Jev decides whether it holds anything worth keeping, the extractor writes
-// it as a few short memories, and only those are stored. Every verdict is
-// logged. In shadow mode the log also holds the memories and nothing is stored.
+// it as a few short memories, a code check drops task logs and task status,
+// and a search drops memories the scope already holds in other words. Only
+// the rest is stored. Every verdict is logged. In shadow mode the log also
+// holds the memories and nothing is stored.
 //
 // Items hold IDs only. When Jev or the extractor is down, the item waits in
 // plugin state and the retry job tries again, for up to 24 h. Tasks never wait.
 
 import { decideGate } from "./jev.js";
+import { contentHash } from "./content.js";
 import { hasProse, itemText, sourceLabel } from "./item.js";
+import { noiseReason, taskPrefixOf } from "./noise.js";
+import { REDACTION_LABEL } from "./protect.js";
 import { UNSCOPED_PROJECT, scopeFor } from "./scope.js";
 
 export const PENDING_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -49,6 +54,37 @@ function createLocks() {
       if (tails.get(name) === tail) tails.delete(name);
     }
   };
+}
+
+function withoutMemoryText(entry) {
+  const { memories, dropped, duplicates, ...rest } = entry;
+  const strip = (list) => list.map(({ content, ...m }) => m);
+  return {
+    ...rest,
+    ...(memories ? { memoryTypes: memories.map((m) => m.type) } : {}),
+    ...(dropped ? { dropped: strip(dropped) } : {}),
+    ...(duplicates ? { duplicates: strip(duplicates) } : {}),
+  };
+}
+
+/**
+ * Split extracted memories into kept and dropped. Dropped: a task log or task
+ * status (src/noise.js), a redaction label left by the provider, or a second
+ * copy of a memory in the same item. `taskPrefix` drops memories that name a
+ * task of this company.
+ */
+export function screenMemories(memories, { taskPrefix = null } = {}) {
+  const kept = [];
+  const dropped = [];
+  const seen = new Set();
+  for (const m of memories) {
+    const hash = contentHash(m.content);
+    const reason = noiseReason(m.content, { taskPrefix }) ?? (REDACTION_LABEL.test(m.content) ? "redacted" : null) ?? (seen.has(hash) ? "repeat" : null);
+    seen.add(hash);
+    if (reason) dropped.push({ ...m, reason });
+    else kept.push(m);
+  }
+  return { kept, dropped };
 }
 
 export function retryDelayMs(attempts) {
@@ -107,9 +143,9 @@ export function createCapture({ now = () => Date.now() } = {}) {
     const entry = { at: new Date(now()).toISOString(), mode: cfg.captureMode, key: item.key, source: item.source, ...record };
     ctx.logger.info("memory capture verdict", entry);
     // In save mode the memories live in MemOS, where recall applies sharing.
-    // The log is open to every agent of the company, so it keeps their types only.
-    const { memories, ...rest } = entry;
-    const logged = cfg.captureMode === "shadow" || !memories ? entry : { ...rest, memoryTypes: memories.map((m) => m.type) };
+    // The log is open to every agent of the company, so it keeps no memory
+    // text: types for the stored ones, types and reasons for the dropped ones.
+    const logged = cfg.captureMode === "shadow" ? entry : withoutMemoryText(entry);
     const day = entry.at.slice(0, 10);
     try {
       await withLock(`shadow:${item.companyId}:${day}`, async () => {
@@ -138,17 +174,19 @@ export function createCapture({ now = () => Date.now() } = {}) {
 
   /**
    * Process one item. `retain(scope, content, metadata)` stores a memory and
-   * returns { status }. Returns a status string:
-   * duplicate | ignored | no-text | skipped | empty | error | shadow | stored | queued.
+   * returns { status }. `nearDuplicate(scope, content)` returns
+   * { similarity } when the scope already holds that memory in other words,
+   * else null. Returns a status string: duplicate | ignored | no-text |
+   * skipped | empty | noise | error | shadow | stored | queued.
    */
-  async function processItem(ctx, cfg, item, { retain, deadline }) {
+  async function processItem(ctx, cfg, item, { retain, nearDuplicate = null, deadline }) {
     const lockKey = `${item.companyId}:${item.key}`;
     const running = inflight.get(lockKey);
     if (running) {
       await running.catch(() => {});
       return "duplicate";
     }
-    const work = run(ctx, cfg, item, { retain, deadline });
+    const work = run(ctx, cfg, item, { retain, nearDuplicate, deadline });
     inflight.set(lockKey, work);
     try {
       return await work;
@@ -157,19 +195,26 @@ export function createCapture({ now = () => Date.now() } = {}) {
     }
   }
 
-  async function run(ctx, cfg, item, { retain, deadline }) {
+  /**
+   * The verdict for one item, with no side effects: nothing is logged, marked
+   * done, queued or stored. Returns { defer: reason } when a service gave no
+   * answer, { ignored: true } for an item that is not captured, or
+   * { scope, record } where `record.verdict` is no-text | skip | error |
+   * empty | noise | duplicate | pass. `record.memories` holds what a save
+   * would store; `dropped` and `duplicates` hold what it would not, with why.
+   */
+  async function evaluate(ctx, cfg, item, { nearDuplicate = null, deadline }) {
     const { companyId } = item;
-    if (await ctx.state.get(itemKey(companyId, item.key))) return "duplicate";
     let issue;
     let comment;
     try {
       issue = await loadIssue(ctx, item.issueId, companyId);
-      if (!issue || !cfg.captureAllowed(issue.projectId)) return "ignored";
+      if (!issue || !cfg.captureAllowed(issue.projectId)) return { ignored: true };
       comment = (await loadComments(ctx, item.issueId, companyId)).find((c) => c.id === item.commentId);
     } catch (err) {
-      return queue(ctx, item, `host: ${err.message}`);
+      return { defer: `host: ${err.message}` };
     }
-    if (!comment || (comment.authorType !== "agent" && comment.authorType !== "user")) return "ignored";
+    if (!comment || (comment.authorType !== "agent" && comment.authorType !== "user")) return { ignored: true };
 
     // The scope a save writes to; shadow entries carry its projectId too.
     const scope = scopeFor({ companyId, projectId: issue.projectId ?? UNSCOPED_PROJECT });
@@ -184,11 +229,7 @@ export function createCapture({ now = () => Date.now() } = {}) {
       authorType: comment.authorType,
     };
     const text = itemText(comment.body);
-    if (!hasProse(text)) {
-      await logVerdict(ctx, cfg, item, { ...ids, verdict: "no-text" });
-      await markDone(ctx, item, "no-text");
-      return "no-text";
-    }
+    if (!hasProse(text)) return { scope, record: { ...ids, verdict: "no-text" } };
     const source = sourceLabel(comment.authorType, item.source === "run");
     const task = { identifier: issue.identifier ?? null, title: issue.title ?? null };
 
@@ -200,44 +241,69 @@ export function createCapture({ now = () => Date.now() } = {}) {
       jevCostUsd = resp.costUsd;
       gate = decideGate(resp.answers, { saveP: cfg.saveP, routineP: cfg.routineP });
     } catch (err) {
-      return queue(ctx, item, `jev: ${err.message}`);
+      return { defer: `jev: ${err.message}` };
     }
-    if (!gate.pass) {
-      await logVerdict(ctx, cfg, item, { ...ids, verdict: "skip", type: gate.type, probs: gate.probs, jevCostUsd });
-      await markDone(ctx, item, "skip");
-      return "skipped";
-    }
+    if (!gate.pass) return { scope, record: { ...ids, verdict: "skip", type: gate.type, probs: gate.probs, jevCostUsd } };
     try {
       extracted = await cfg.extractor.extract({ text, task, source, hintType: gate.type }, { deadline });
     } catch (err) {
-      if (!err?.badReply) return queue(ctx, item, `extractor: ${err.message}`);
+      if (!err?.badReply) return { defer: `extractor: ${err.message}` };
       // A bad answer repeats on every retry: record it once and stop.
       const error = `extractor: ${err.message}`;
-      ctx.logger.warn(`memory capture gave up on an item: ${error}`, { key: item.key, companyId });
-      await logVerdict(ctx, cfg, item, { ...ids, verdict: "error", error, type: gate.type, probs: gate.probs, jevCostUsd, extractCostUsd: err.costUsd ?? null });
-      await markDone(ctx, item, "error");
-      return "error";
+      return { scope, record: { ...ids, verdict: "error", error, type: gate.type, probs: gate.probs, jevCostUsd, extractCostUsd: err.costUsd ?? null } };
     }
     const record = { ...ids, type: gate.type, probs: gate.probs, memories: extracted.memories, jevCostUsd, extractCostUsd: extracted.costUsd };
     if (extracted.salvaged) record.salvaged = true;
-    if (extracted.memories.length === 0) {
-      await logVerdict(ctx, cfg, item, { ...record, verdict: "empty" });
-      await markDone(ctx, item, "empty");
-      return "empty";
+    if (extracted.memories.length === 0) return { scope, record: { ...record, verdict: "empty" } };
+
+    const { kept, dropped } = screenMemories(extracted.memories, { taskPrefix: taskPrefixOf(issue.identifier) });
+    if (dropped.length) record.dropped = dropped;
+    if (kept.length === 0) return { scope, record: { ...record, memories: [], verdict: "noise" } };
+
+    // A memory the scope already holds in other words is not stored again.
+    // A failed search finds nothing, so the memory is stored (fail open).
+    const fresh = [];
+    const duplicates = [];
+    for (const m of kept) {
+      const hit = nearDuplicate ? await nearDuplicate(scope, m.content) : null;
+      if (hit) duplicates.push({ ...m, similarity: hit.similarity });
+      else fresh.push(m);
+    }
+    if (duplicates.length) record.duplicates = duplicates;
+    return { scope, record: { ...record, memories: fresh, verdict: fresh.length ? "pass" : "duplicate" } };
+  }
+
+  // Verdicts that end an item with nothing to store, and what processItem returns for each.
+  const FINAL = { "no-text": "no-text", skip: "skipped", empty: "empty", noise: "noise", duplicate: "duplicate", error: "error" };
+
+  async function run(ctx, cfg, item, { retain, nearDuplicate, deadline }) {
+    const { companyId } = item;
+    if (await ctx.state.get(itemKey(companyId, item.key))) return "duplicate";
+    const result = await evaluate(ctx, cfg, item, { nearDuplicate, deadline });
+    if (result.defer) return queue(ctx, item, result.defer);
+    if (result.ignored) return "ignored";
+    const { scope, record } = result;
+    if (record.verdict === "error") ctx.logger.warn(`memory capture gave up on an item: ${record.error}`, { key: item.key, companyId });
+    if (FINAL[record.verdict]) {
+      await logVerdict(ctx, cfg, item, record);
+      await markDone(ctx, item, record.verdict);
+      return FINAL[record.verdict];
     }
     if (cfg.captureMode === "shadow") {
-      await logVerdict(ctx, cfg, item, { ...record, verdict: "pass" });
+      await logVerdict(ctx, cfg, item, record);
       await markDone(ctx, item, "shadow");
       return "shadow";
     }
 
+    const { memories, ...rest } = record;
+    const ids = { projectId: rest.projectId, issueId: rest.issueId, issueIdentifier: rest.issueIdentifier, commentId: rest.commentId, runId: rest.runId, agentId: rest.agentId, userId: rest.userId, authorType: rest.authorType };
     const results = await Promise.allSettled(
-      extracted.memories.map((m) =>
+      memories.map((m) =>
         retain(scope, m.content, {
           ...ids,
           kind: m.type,
-          jevType: gate.type,
-          jevP: gate.probs[gate.type],
+          jevType: record.type,
+          jevP: record.probs[record.type],
           itemKey: item.key,
           source: item.source === "run" ? "agent.run.finished" : "issue.comment.created",
         }),
@@ -249,10 +315,10 @@ export function createCapture({ now = () => Date.now() } = {}) {
     const failure = results.find((r) => r.status === "rejected" || r.value.status === "failed");
     if (failure) {
       const error = `memos: ${failure.status === "rejected" ? failure.reason?.message : (failure.value.error ?? "add failed")}`;
-      await logVerdict(ctx, cfg, item, { ...record, verdict: "pass", stored: statuses, error });
+      await logVerdict(ctx, cfg, item, { ...record, stored: statuses, error });
       return queue(ctx, item, error);
     }
-    await logVerdict(ctx, cfg, item, { ...record, verdict: "pass", stored: statuses });
+    await logVerdict(ctx, cfg, item, { ...record, stored: statuses });
     await markDone(ctx, item, "stored");
     return "stored";
   }
@@ -270,7 +336,7 @@ export function createCapture({ now = () => Date.now() } = {}) {
    * Retry due items, oldest first, until `deadline`. Items older than 24 h
    * are dropped. `configFor(companyId)` returns the capture config.
    */
-  async function retryPending(ctx, { configFor, retainFor, deadline, maxItems = 50 }) {
+  async function retryPending(ctx, { configFor, retainFor, nearDuplicateFor = () => null, deadline, maxItems = 50 }) {
     const queue = (await ctx.state.get(PENDING_KEY)) ?? [];
     const t = now();
     const summary = { dropped: 0, retried: 0, done: 0, requeued: 0 };
@@ -286,7 +352,7 @@ export function createCapture({ now = () => Date.now() } = {}) {
       const cfg = await configFor(item.companyId);
       let status;
       try {
-        status = await processItem(ctx, cfg, item, { retain: retainFor(cfg), deadline });
+        status = await processItem(ctx, cfg, item, { retain: retainFor(cfg), nearDuplicate: nearDuplicateFor(cfg), deadline });
       } catch (err) {
         ctx.logger.warn(`memory capture retry failed: ${err.message}`, { key: item.key });
         status = "queued";
@@ -301,5 +367,5 @@ export function createCapture({ now = () => Date.now() } = {}) {
     return summary;
   }
 
-  return { processItem, retryPending, readShadowLog, loadIssue, loadComments, readPending: (ctx) => ctx.state.get(PENDING_KEY).then((q) => q ?? []) };
+  return { processItem, evaluate, retryPending, readShadowLog, loadIssue, loadComments, readPending: (ctx) => ctx.state.get(PENDING_KEY).then((q) => q ?? []) };
 }
