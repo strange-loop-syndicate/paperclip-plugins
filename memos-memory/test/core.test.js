@@ -300,6 +300,9 @@ describe("noise check: company process rules are not memories (SLS-208)", () => 
       "Engineer code needs a Code Reviewer ACCEPT, and the Project Lead approves it after the merge.",
       "Questions go to the task creator on a card, never straight to the owner.",
       "A DevOps agent escalates a production question to the Project Lead.",
+      "A Code Reviewer ACCEPT closes the task; the Engineer makes no commits after the hand-off.",
+      "Task creators answer the questions asked on their tasks; an Approver closes the task after the last stage.",
+      "Work a person must run goes to them as a human_only card, and their answer wakes the Project Lead.",
     ]) {
       assert.equal(noiseReason(text, { taskPrefix: "SLS" }), "process-rule", text);
     }
@@ -321,6 +324,11 @@ describe("noise check: company process rules are not memories (SLS-208)", () => 
       "On a task with a review stage, setting in_review sends half-done work to the reviewer.",
       "Paperclip leaves the assignee out when it picks an approver for a stage.",
       "The usage-limits plugin keeps the last good reading when the usage API answers 429.",
+      // A role and a process word far apart, in another clause, or "close" not for a task (SLS-208 review).
+      "In Paperclip, a review stage moves the task to the Code Reviewer when the assignee sets in_review.",
+      "The Engineer adapter closes stdin before the run ends, so a wrapper reads its input first.",
+      "MemOS accepts only localhost connections; DevOps hosts reach it over Tailscale.",
+      "gh pr merge needs --match-head-commit; the GitHub App token for the Engineer lacks workflow scope.",
     ]) {
       assert.equal(noiseReason(text, { taskPrefix: "SLS" }), null, text);
     }

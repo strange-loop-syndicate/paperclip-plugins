@@ -30,19 +30,40 @@ const RULES = [
 // Company process rules: chain of command, cards, review and approval routes,
 // task closure, who merges. Agents get these from AGENTS.md, and a memory copy
 // goes stale when the rule changes (SLS-199). Two shapes only, so that lessons
-// about how Paperclip behaves stay:
-// - a company role next to a process word ("the Project Director merges");
-// - a card next to a task status, unless the memory is about Paperclip itself.
-// Role names are matched by case, and removed before the process words are,
-// so the role "approver" alone is not "approval".
-const ROLE = /\b(?:(?:Project )?Directors?|Project Leads?|Code Reviewers?|Architects?|Engineers?|DevOps|Experiment Owners?|task creators?|approvers?)\b/g;
-const PROCESS_WORD = /\b(?:merges?|merged|merging|reviews?|reviewed|reviewing|approv\w*|accept\w*|sign[- ]?offs?|cards?|escalat\w*|clos(?:e|es|ed|ing)|chain of command)\b/i;
+// about how a tool, a plugin or Paperclip behaves stay:
+// - a company role and a process word in one clause, at most ROLE_WINDOW
+//   words apart ("the Project Director performs the merge");
+// - a card with a task status or a role, unless the memory names Paperclip.
+// See docs/sls-200-noise-fix.md for the measure behind the window.
+const ROLE_WINDOW = 4;
+const ROLE = /\b(?:(?:Project )?Directors?|Project Leads?|Code Reviewers?|Architects?|Engineers?|DevOps|Experiment Owners?|[Tt]ask creators?|[Aa]pprovers?)\b/g;
+// "Close" counts only for a task, not for stdin or a file.
+const PROCESS_WORD =
+  /\b(?:merges?|merged|merging|reviews?|reviewed|reviewing|approv\w*|accept\w*|sign[- ]?offs?|cards?|escalat\w*|clos(?:e|es|ed|ing)(?= (?:(?:the|a|its|this|that|their) )?(?:task|issue)s?\b)|chain of command)\b/gi;
+const CLAUSE_END = /[.;:!?](?:\s|$)|\s[—–]\s/;
 const CARD = /\bcards?\b/i;
 const CARD_STATUS = /\b(?:blocked|in_review|in review)\b/i;
 
+/** The number of words in `s` before index `i`. */
+const wordIndex = (s, i) => (s.slice(0, i).match(/\S+/g) ?? []).length;
+
+// Each role becomes one marker word, so the role "approver" is not "approval".
+function roleNearProcessWord(s) {
+  for (const clause of s.split(CLAUSE_END)) {
+    const marked = clause.replace(ROLE, " § ");
+    const roles = [...marked.matchAll(/§/g)].map((m) => wordIndex(marked, m.index));
+    if (!roles.length) continue;
+    for (const m of marked.matchAll(PROCESS_WORD)) {
+      const at = wordIndex(marked, m.index);
+      if (roles.some((r) => Math.abs(at - r) - 1 <= ROLE_WINDOW)) return true;
+    }
+  }
+  return false;
+}
+
 function isProcessRule(s) {
-  if (s.match(ROLE) && PROCESS_WORD.test(s.replace(ROLE, " "))) return true;
-  return CARD.test(s) && CARD_STATUS.test(s) && !/\bPaperclip\b/i.test(s);
+  if (roleNearProcessWord(s)) return true;
+  return CARD.test(s) && (CARD_STATUS.test(s) || new RegExp(ROLE.source).test(s)) && !/\bPaperclip\b/i.test(s);
 }
 
 /**
