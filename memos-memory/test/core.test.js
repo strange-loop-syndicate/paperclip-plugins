@@ -248,9 +248,7 @@ describe("noise check: task logs and task status are not memories (SLS-200)", ()
       "Comment bodies reach the plugin as UTF-8 Markdown source.",
       "Do not run npm install for Paperclip while the server is running.",
       // Rules in the present tense and lessons with "still" (SLS-200 review).
-      "A task is closed only by its creator; the assignee never sets done.",
-      "A PR is merged only by the Project Director or the Project Lead, with --match-head-commit.",
-      "Every engineer PR is reviewed by Code Reviewer before merge.",
+      "A PR is merged only with --match-head-commit, so a later push cannot slip in.",
       "Chrome 111+ refuses the CDP WebSocket without --remote-allow-origins, while /json/version still passes.",
       "After a plugin update, check that the plugin still receives events.",
       "The Tailscale range 100.64.0.0/10 must stay open for the lab hosts.",
@@ -289,6 +287,51 @@ describe("noise check: task logs and task status are not memories (SLS-200)", ()
     const { kept, dropped } = screenMemories([{ type: "fact", content: "The release copy lives under {{P9}} on the lab host." }]);
     assert.deepEqual(kept, []);
     assert.deepEqual(dropped.map((d) => d.reason), ["placeholder"]);
+  });
+});
+
+describe("noise check: company process rules are not memories (SLS-208)", () => {
+  // Agents get these rules from AGENTS.md; a stored copy goes stale (SLS-199).
+  it("drops a role next to a merge, review, approval, card or closure word", () => {
+    for (const text of [
+      "Only the Project Director or the Project Lead merges a pull request, with --match-head-commit.",
+      "Every engineer PR is reviewed by Code Reviewer before merge.",
+      "Specs go from the Architect to a Project Lead review, then to the Project Director for approval.",
+      "Engineer code needs a Code Reviewer ACCEPT, and the Project Lead approves it after the merge.",
+      "Questions go to the task creator on a card, never straight to the owner.",
+      "A DevOps agent escalates a production question to the Project Lead.",
+      "A Code Reviewer ACCEPT closes the task; the Engineer makes no commits after the hand-off.",
+      "Task creators answer the questions asked on their tasks; an Approver closes the task after the last stage.",
+      "Work a person must run goes to them as a human_only card, and their answer wakes the Project Lead.",
+    ]) {
+      assert.equal(noiseReason(text, { taskPrefix: "SLS" }), "process-rule", text);
+    }
+  });
+
+  it("drops a card routed to a task status when the memory is not about Paperclip", () => {
+    assert.equal(noiseReason("A question card during the work sets the task to blocked; the acceptance card on finished work sets in_review."), "process-rule");
+    assert.equal(noiseReason("While a human_only card is open, set the task to in review, not blocked."), "process-rule");
+  });
+
+  it("keeps lessons about how Paperclip, a plugin or a tool behaves, also when they name a role or a card", () => {
+    for (const text of [
+      "In Paperclip, a card answer wakes the task's assignee even when the task is in `blocked` status; only closed statuses skip the wake.",
+      "In Paperclip, a task cannot move to in_review unless its close card is attached to that task itself.",
+      "In Paperclip, an agent run that hands its own task to in_review keeps running, and the Code Reviewer wakes once after the hand-off.",
+      "Paperclip cancels a card's wake when the addressee is not the assignee, so a comment must wake the creator.",
+      "Agent API keys get 403 when they set an agent's command or env; a board user sets them on the Approvals page.",
+      "In Paperclip upgrades, the Project Director runs offline-upgrade.sh, which stops the server and every agent run.",
+      "On a task with a review stage, setting in_review sends half-done work to the reviewer.",
+      "Paperclip leaves the assignee out when it picks an approver for a stage.",
+      "The usage-limits plugin keeps the last good reading when the usage API answers 429.",
+      // A role and a process word far apart, in another clause, or "close" not for a task (SLS-208 review).
+      "In Paperclip, a review stage moves the task to the Code Reviewer when the assignee sets in_review.",
+      "The Engineer adapter closes stdin before the run ends, so a wrapper reads its input first.",
+      "MemOS accepts only localhost connections; DevOps hosts reach it over Tailscale.",
+      "gh pr merge needs --match-head-commit; the GitHub App token for the Engineer lacks workflow scope.",
+    ]) {
+      assert.equal(noiseReason(text, { taskPrefix: "SLS" }), null, text);
+    }
   });
 });
 

@@ -36,7 +36,7 @@ const SYSTEM_PROMPT = `You turn one comment from a software team's task tracker 
 
 Keep only knowledge that stays true and useful after this task closes:
 - lesson: a root cause, a pitfall, or a rule to follow next time.
-- decision: a rule or policy that applies beyond this task, such as who may do what, or which tool or approach to use.
+- decision: a choice that applies beyond this task, such as which tool, design or approach to use.
 - fact: a lasting fact about a system, tool, setting, location or preference.
 - outcome: a result that a later task can reuse, such as a measured limit, or an approach proven to work or to fail. Never that something was merged, deployed, accepted, reviewed or closed.
 
@@ -45,7 +45,8 @@ Never keep:
 - Task logs: merged PRs, commits, test or mutation counts, exit codes, dry-run results, reviews passed, a value set on one occasion.
 - IDs: task IDs, PR numbers, commit hashes, run or card IDs. Each memory must make sense without them.
 - Open gaps, bugs, missing features and to-dos ("X can still do Y", "these lines must be edited"): they stop being true when someone fixes them. Keep the lesson behind one only if it holds after the fix.
-- Who works on which task, revision or step: that changes from task to task. A standing rule about which role does a kind of work is fine.
+- Who works on which task, revision or step: that changes from task to task.
+- Company process rules: chain of command, who answers or decides, cards, review and approval routes, task status and closure, who merges. Agents get these from their instructions, and a stored copy goes stale when a rule changes. Keep a lesson about how a tool, a plugin or the Paperclip server behaves, also when it touches these steps: what an API refuses, which event wakes an agent, what a script does.
 - Anything that is only true for this task or this moment.
 
 Most comments hold nothing durable. Then return an empty list: that is the normal answer.

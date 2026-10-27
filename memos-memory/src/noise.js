@@ -1,5 +1,5 @@
-// A code check after the extractor: drops memories that are task logs or
-// task status, whatever the model wrote. A memory must still be true and
+// A code check after the extractor: drops memories that are task logs, task
+// status or company process rules, whatever the model wrote. A memory must still be true and
 // useful after its source task closes. The extractor prompt asks for the same;
 // this check holds when the model does not follow it (SLS-200).
 
@@ -27,6 +27,45 @@ const RULES = [
   ],
 ];
 
+// Company process rules: chain of command, cards, review and approval routes,
+// task closure, who merges. Agents get these from AGENTS.md, and a memory copy
+// goes stale when the rule changes (SLS-199). Two shapes only, so that lessons
+// about how a tool, a plugin or Paperclip behaves stay:
+// - a company role and a process word in one clause, at most ROLE_WINDOW
+//   words apart ("the Project Director performs the merge");
+// - a card with a task status or a role, unless the memory names Paperclip.
+// See docs/sls-200-noise-fix.md for the measure behind the window.
+const ROLE_WINDOW = 4;
+const ROLE = /\b(?:(?:Project )?Directors?|Project Leads?|Code Reviewers?|Architects?|Engineers?|DevOps|Experiment Owners?|[Tt]ask creators?|[Aa]pprovers?)\b/g;
+// "Close" counts only for a task, not for stdin or a file.
+const PROCESS_WORD =
+  /\b(?:merges?|merged|merging|reviews?|reviewed|reviewing|approv\w*|accept\w*|sign[- ]?offs?|cards?|escalat\w*|clos(?:e|es|ed|ing)(?= (?:(?:the|a|its|this|that|their) )?(?:task|issue)s?\b)|chain of command)\b/gi;
+const CLAUSE_END = /[.;:!?](?:\s|$)|\s[—–]\s/;
+const CARD = /\bcards?\b/i;
+const CARD_STATUS = /\b(?:blocked|in_review|in review)\b/i;
+
+/** The number of words in `s` before index `i`. */
+const wordIndex = (s, i) => (s.slice(0, i).match(/\S+/g) ?? []).length;
+
+// Each role becomes one marker word, so the role "approver" is not "approval".
+function roleNearProcessWord(s) {
+  for (const clause of s.split(CLAUSE_END)) {
+    const marked = clause.replace(ROLE, " § ");
+    const roles = [...marked.matchAll(/§/g)].map((m) => wordIndex(marked, m.index));
+    if (!roles.length) continue;
+    for (const m of marked.matchAll(PROCESS_WORD)) {
+      const at = wordIndex(marked, m.index);
+      if (roles.some((r) => Math.abs(at - r) - 1 <= ROLE_WINDOW)) return true;
+    }
+  }
+  return false;
+}
+
+function isProcessRule(s) {
+  if (roleNearProcessWord(s)) return true;
+  return CARD.test(s) && (CARD_STATUS.test(s) || new RegExp(ROLE.source).test(s)) && !/\bPaperclip\b/i.test(s);
+}
+
 /**
  * Why `text` is not a durable memory, or null when it may be one.
  * `taskPrefix` (for example "SLS") also drops a memory that names a task of
@@ -35,6 +74,7 @@ const RULES = [
 export function noiseReason(text, { taskPrefix = null } = {}) {
   const s = String(text ?? "");
   for (const [reason, re] of RULES) if (re.test(s)) return reason;
+  if (isProcessRule(s)) return "process-rule";
   if (taskPrefix && /^[A-Z][A-Z0-9]{0,9}$/.test(taskPrefix) && new RegExp(`\\b${taskPrefix}-\\d+\\b`).test(s)) return "task-id";
   return null;
 }
