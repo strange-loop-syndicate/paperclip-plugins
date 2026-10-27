@@ -57,6 +57,10 @@ function useTicker(active: boolean, onTick: () => void, deps: unknown[], interva
   }, [active, ...deps]);
 }
 
+function claudeUnavailable(reason: string): ClaudeUsage {
+  return { fiveHour: null, sevenDay: null, asOf: null, account: null, reason };
+}
+
 /** Build the row views from the Claude reading and the quota cache. Exported for the static preview. */
 export function buildRowViews(
   used: ReadonlyArray<ProviderInfo>,
@@ -83,9 +87,10 @@ export function buildRowViews(
     let row: UsageRow | null;
     let loading: boolean;
     if (info.slug === "anthropic") {
-      row = claude.data ? rowFromClaudeUsage(info, claude.data, now) : null;
-      if (!row && claude.error) return { slug: info.slug, text: "—", title: `${info.label} usage limits\nNo data: ${claude.error}` };
-      loading = !row;
+      // A failed worker call is a row with no data, unknown account and the error as its reason.
+      const usage = claude.data ?? (claude.error ? claudeUnavailable(claude.error) : null);
+      row = usage ? rowFromClaudeUsage(info, usage, now) : null;
+      loading = !usage;
     } else {
       const panel = panels.find((p) => p.slug === info.slug);
       row = panel && quotaLoaded ? rowFromPanel(panel, now) : null;

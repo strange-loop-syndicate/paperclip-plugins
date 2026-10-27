@@ -11,6 +11,7 @@
 // The account name comes from the token itself (`/api/oauth/profile`, as cca
 // does), not from `.claude.json`: live sessions rewrite that file's
 // `oauthAccount` from their own copy, so it can name the previous account.
+// When the profile cannot be read the account is unknown: never a guess.
 
 import { createHash } from "node:crypto";
 import { mkdir, readFile, rename, rmdir, stat, writeFile } from "node:fs/promises";
@@ -31,8 +32,6 @@ export interface ClaudePaths {
   credentialsFile: string;
   usageFile: string;
   lockDir: string;
-  /** Holds `oauthAccount.emailAddress`; only a fallback for the account name. */
-  accountFile: string;
 }
 
 /** Same paths as Claude Code, cca and the status line: CLAUDE_CONFIG_DIR, else ~/.claude. */
@@ -42,7 +41,6 @@ export function defaultPaths(env: NodeJS.ProcessEnv = process.env, home: string 
     credentialsFile: path.join(configDir, ".credentials.json"),
     usageFile: path.join(home, ".claude", "usage-exact.json"),
     lockDir: STATUSLINE_LOCK_DIR,
-    accountFile: env.CLAUDE_CONFIG_DIR ? path.join(env.CLAUDE_CONFIG_DIR, ".claude.json") : path.join(home, ".claude.json"),
   };
 }
 
@@ -58,7 +56,7 @@ export interface ClaudeUsage {
   sevenDay: ClaudeWindow | null;
   /** When the API was read (ms epoch); null when there is no reading. */
   asOf: number | null;
-  /** Email of the account the token belongs to; null when unknown. */
+  /** Email of the account the current token belongs to; null when unknown. */
   account: string | null;
   /** Why the reading is missing or old; null when it is fresh. */
   reason: string | null;
@@ -66,8 +64,11 @@ export interface ClaudeUsage {
 
 /** In-memory state between calls; one per worker. */
 export interface UsageState {
-  /** No API call before this time (ms epoch), from a `Retry-After` header. */
-  retryAfterUntil: number;
+  /**
+   * No usage API call before this time (ms epoch): FRESH_MS after any failed
+   * attempt, or the `Retry-After` time when that is later. 0 after a success.
+   */
+  nextAttemptAt: number;
   /** Why the last refresh failed; cleared by a good reading. */
   lastError: string | null;
   /** Account email per token fingerprint (a hash, not the token). */
@@ -77,7 +78,7 @@ export interface UsageState {
 }
 
 export function newUsageState(): UsageState {
-  return { retryAfterUntil: 0, lastError: null, profile: null, profileRetryAt: 0 };
+  return { nextAttemptAt: 0, lastError: null, profile: null, profileRetryAt: 0 };
 }
 
 export interface UsageDeps {
@@ -186,17 +187,6 @@ async function mtimeOf(file: string): Promise<number | null> {
   }
 }
 
-/** Account email from `oauthAccount.emailAddress`; null when unknown. */
-export async function readAccount(file: string): Promise<string | null> {
-  try {
-    const body = JSON.parse(await readFile(file, "utf8")) as { oauthAccount?: { emailAddress?: unknown } | null };
-    const email = body?.oauthAccount?.emailAddress;
-    return typeof email === "string" && email ? email : null;
-  } catch {
-    return null;
-  }
-}
-
 type TokenResult = { token: string; fingerprint: string } | { error: string };
 
 /** The OAuth access token from the file store. Errors never contain the token. */
@@ -233,9 +223,9 @@ function authHeaders(token: string): Record<string, string> {
 }
 
 /**
- * Email of the account the token belongs to, from the profile API; one call
- * per token (fingerprint), kept in memory. When that fails, the email cached
- * in `.claude.json`, marked as such: live sessions can leave it stale.
+ * Email of the account the current token belongs to, from the profile API;
+ * one call per token (fingerprint), kept in memory. Null when it cannot be
+ * read: an email of an earlier token is never reused.
  */
 async function resolveAccount(deps: UsageDeps, state: UsageState, creds: TokenResult, now: number): Promise<string | null> {
   if ("token" in creds) {
@@ -250,13 +240,12 @@ async function resolveAccount(deps: UsageDeps, state: UsageState, creds: TokenRe
           return email;
         }
       } catch {
-        // fall through to the cached identity
+        // unknown below
       }
       state.profileRetryAt = now + FRESH_MS;
     }
   }
-  const cached = await readAccount(deps.paths.accountFile);
-  return cached ? `${cached} (from .claude.json, may lag an account switch)` : null;
+  return null;
 }
 
 /** `Retry-After` in ms: delta seconds or an HTTP date; null when absent or invalid. */
@@ -320,7 +309,7 @@ function keptReason(error: string, cache: CacheReading | null, credentialsMtime:
  * Claude usage for the active account. Uses usage-exact.json when it is
  * younger than FRESH_MS; else, under the shared lock, calls the usage API and
  * rewrites that file. On any failure the last good file value stays, with the
- * reason. A `Retry-After` pauses calls; without one the next tick retries.
+ * reason, and no new call for 60 s (longer if `Retry-After` says so).
  */
 export async function getClaudeUsage(deps: UsageDeps, state: UsageState): Promise<ClaudeUsage> {
   const { paths } = deps;
@@ -336,7 +325,12 @@ export async function getClaudeUsage(deps: UsageDeps, state: UsageState): Promis
     state.lastError = error;
     return result(cache, account, keptReason(error, cache, credentialsMtime));
   };
-  if (now < state.retryAfterUntil) {
+  /** A failed API attempt: no new one for FRESH_MS, or until `Retry-After` when later. */
+  const failed = (error: string, retryAfter: number | null = null) => {
+    state.nextAttemptAt = Math.max(now + FRESH_MS, retryAfter === null ? 0 : now + retryAfter);
+    return kept(error);
+  };
+  if (now < state.nextAttemptAt) {
     return result(cache, account, keptReason(state.lastError ?? "Usage API asked to wait", cache, credentialsMtime));
   }
   if (!(await takeLock(paths.lockDir, now))) {
@@ -355,30 +349,29 @@ export async function getClaudeUsage(deps: UsageDeps, state: UsageState): Promis
       res = await deps.fetch(USAGE_URL, { headers: authHeaders(creds.token), signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
     } catch (err) {
       const name = err instanceof Error ? err.name : "";
-      return kept(name === "TimeoutError" ? "Usage API did not answer in time" : "Usage API request failed (network)");
+      return failed(name === "TimeoutError" ? "Usage API did not answer in time" : "Usage API request failed (network)");
     }
     if (res.status === 429) {
       const wait = retryAfterMs(res.headers.get("retry-after"), now);
-      if (wait !== null) state.retryAfterUntil = now + wait;
-      return kept(wait !== null ? `Usage API throttled (429), retry after ${Math.ceil(wait / 1000)} s` : "Usage API throttled (429)");
+      return failed(wait !== null ? `Usage API throttled (429), retry after ${Math.ceil(wait / 1000)} s` : "Usage API throttled (429)", wait);
     }
-    if (res.status === 401 || res.status === 403) return kept(`Usage API rejected the token (${res.status})`);
-    if (!res.ok) return kept(`Usage API returned ${res.status}`);
+    if (res.status === 401 || res.status === 403) return failed(`Usage API rejected the token (${res.status})`);
+    if (!res.ok) return failed(`Usage API returned ${res.status}`);
     let body: unknown;
     try {
       body = await res.json();
     } catch {
-      return kept("Usage API response was not JSON");
+      return failed("Usage API response was not JSON");
     }
     const file = cacheFileFromApi(body, now);
-    if (!file) return kept("Usage API response had no 5-hour utilization");
+    if (!file) return failed("Usage API response had no 5-hour utilization");
     await writeCacheAtomically(paths.usageFile, file);
     state.lastError = null;
-    state.retryAfterUntil = 0;
+    state.nextAttemptAt = 0;
     const written = await readCache(paths.usageFile);
     return result(written, account, written ? null : "Could not read back usage-exact.json");
   } catch (err) {
-    return kept(`Could not refresh Claude usage (${err instanceof Error ? err.message.replace(/Bearer\s+\S+/g, "Bearer …") : "error"})`);
+    return failed(`Could not refresh Claude usage (${err instanceof Error ? err.message.replace(/Bearer\s+\S+/g, "Bearer …") : "error"})`);
   } finally {
     await rmdir(paths.lockDir).catch(() => {});
   }

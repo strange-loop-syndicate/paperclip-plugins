@@ -44,6 +44,7 @@ export const cases = [
     fiveHour: { utilization: 95, resetsAt: NOW - HOUR }, reason: "Usage API throttled (429)" } }, quota([codexOk]))],
   ["No data anywhere", rowsView({ data: { fiveHour: null, sevenDay: null, asOf: null, account: null,
     reason: "No Claude credentials file (~/.claude/.credentials.json); sign in with Claude Code" }, error: null }, quota([codex429]))],
+  ["Claude worker call failed, account unknown", rowsView({ data: null, error: "worker not ready" }, quota([codexOk]))],
   ["Provider list failed", { kind: "error", message: "worker not ready" }],
 ];
 export const render = (view) => renderToStaticMarkup(createElement(UsageLimitsView, view));

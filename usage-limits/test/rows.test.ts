@@ -66,7 +66,7 @@ test("no data: icon + — with the reason in the title", () => {
   const reason = "No Claude credentials file (/x/.credentials.json); sign in with Claude Code";
   const row = claudeRow({ fiveHour: null, sevenDay: null, asOf: null, account: null, reason });
   assert.equal(rowText(row, NOW), "—");
-  assert.equal(rowTitle(row, NOW), `Claude usage limits\nNo data: ${reason}`);
+  assert.equal(rowTitle(row, NOW), `Claude usage limits\nAccount: unknown\nNo data: ${reason}`);
 });
 
 test("Codex row from quota windows: a weekly '5h limit' counts as weekly, credits ignored", () => {
@@ -144,4 +144,19 @@ test("row text: the board's example, and unknown parts", () => {
   assert.equal(rowText(noReset, NOW), "14% 84% —");
   const fiveHourOnly = claudeRow(usage(7, NOW + 5 * MIN, null, null));
   assert.equal(rowText(fiveHourOnly, NOW), "7% — 0:05");
+});
+
+test("account line: the email when known, 'unknown' when not; none for Codex", () => {
+  const known = rowTitle(claudeRow(usage(10, NOW + HOUR, 80, NOW + 24 * HOUR)), NOW);
+  assert.equal(known.split("\n")[1], "Account: oleg@example.com");
+  const unknown = rowTitle(claudeRow(usage(10, NOW + HOUR, 80, NOW + 24 * HOUR, NOW - MIN, { account: null })), NOW);
+  assert.equal(unknown.split("\n")[1], "Account: unknown");
+  assert.match(unknown, /\n5-hour window: 10% used/, "numbers still shown");
+
+  const [panel] = buildPanels(
+    [CODEX],
+    quotaInput([{ provider: "openai", ok: true, windows: [{ label: "5h limit", usedPercent: 3, resetsAt: null, valueLabel: null }] }]),
+    new Date(NOW),
+  );
+  assert.doesNotMatch(rowTitle(rowFromPanel(panel, NOW), NOW), /Account:/);
 });

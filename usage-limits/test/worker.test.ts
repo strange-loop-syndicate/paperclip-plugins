@@ -46,11 +46,9 @@ test("claude-usage returns the reading and a reason, never the token", async () 
     credentialsFile: path.join(dir, ".credentials.json"),
     usageFile: path.join(dir, "usage-exact.json"),
     lockDir: path.join(dir, "lock.d"),
-    accountFile: path.join(dir, ".claude.json"),
   };
   const token = "sk-ant-oat01-WORKER-TEST";
   await writeFile(paths.credentialsFile, JSON.stringify({ claudeAiOauth: { accessToken: token, expiresAt: Date.now() + 3_600_000 } }));
-  await writeFile(paths.accountFile, JSON.stringify({ oauthAccount: { emailAddress: "stale@example.com" } }));
   const fetchStub = (async (url: string | URL | Request) =>
     String(url).endsWith("/profile")
       ? Response.json({ account: { email: "active@example.com" } })

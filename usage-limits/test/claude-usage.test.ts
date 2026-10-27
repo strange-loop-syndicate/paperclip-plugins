@@ -7,6 +7,7 @@ import {
   cacheFileFromApi,
   defaultPaths,
   getClaudeUsage,
+  FRESH_MS,
   newUsageState,
   PROFILE_URL,
   retryAfterMs,
@@ -54,7 +55,6 @@ async function setup(opts: { cacheAgeMs?: number | null; credentials?: object | 
     credentialsFile: path.join(dir, ".credentials.json"),
     usageFile: path.join(dir, "usage-exact.json"),
     lockDir: path.join(dir, "statusline-refresh.lock.d"),
-    accountFile: path.join(dir, ".claude.json"),
   };
   const now = Date.now();
   const setMtime = (file: string, ageMs: number) => utimes(file, (now - ageMs) / 1000, (now - ageMs) / 1000);
@@ -66,8 +66,6 @@ async function setup(opts: { cacheAgeMs?: number | null; credentials?: object | 
     await writeFile(paths.credentialsFile, JSON.stringify(credentials));
     await setMtime(paths.credentialsFile, opts.credsAgeMs ?? 60 * MIN);
   }
-  // What a live session may have left in .claude.json: not necessarily the token's account.
-  await writeFile(paths.accountFile, JSON.stringify({ oauthAccount: { emailAddress: "cached@example.com" } }));
   if (opts.cacheAgeMs !== null) {
     await writeFile(paths.usageFile, JSON.stringify(cacheBody(1, 16)));
     await setMtime(paths.usageFile, opts.cacheAgeMs ?? 10_000);
@@ -112,7 +110,7 @@ test("fresh cache (< 60 s) is used without an API call", async () => {
   assert.deepEqual(usage.fiveHour, { utilization: 1, resetsAt: Date.parse("2099-01-01T05:29:59.634Z") });
   assert.equal(usage.sevenDay?.utilization, 16);
   assert.equal(usage.asOf, Date.parse("2026-10-27T05:02:22Z"));
-  assert.equal(usage.account, "owner@example.com", "named by the token's profile, not .claude.json");
+  assert.equal(usage.account, "owner@example.com", "named by the token's own profile");
   assert.equal(usage.reason, null);
 });
 
@@ -171,14 +169,31 @@ test("account: one profile call per token, a new one after an account switch", a
   assert.equal(after.fiveHour?.utilization, 7);
 });
 
-test("account: a failed profile call falls back to .claude.json, marked, and waits a tick", async () => {
+test("account: a failed profile call gives unknown (null) and waits a tick", async () => {
   const s = await setup({ cacheAgeMs: 10_000 });
   s.setProfile(() => new Response("", { status: 429 }));
   const state = newUsageState();
   const usage = await getClaudeUsage(s.deps, state);
-  assert.equal(usage.account, "cached@example.com (from .claude.json, may lag an account switch)");
+  assert.equal(usage.account, null);
+  assert.equal(usage.fiveHour?.utilization, 1, "numbers still shown");
   await getClaudeUsage(s.deps, state);
   assert.equal(s.profileCalls, 1, "no retry before the next 60 s tick");
+});
+
+test("account: after a token change the earlier email is never reused", async () => {
+  const s = await setup({ cacheAgeMs: 10_000 });
+  const state = newUsageState();
+  assert.equal((await getClaudeUsage(s.deps, state)).account, "owner@example.com");
+  await writeFile(s.paths.credentialsFile, JSON.stringify({ claudeAiOauth: { accessToken: `${TOKEN}-B`, refreshToken: "refresh-B", expiresAt: s.now + 3_600_000 } }));
+  s.setProfile(() => Promise.reject(new Error("network")));
+  assert.equal((await getClaudeUsage(s.deps, state)).account, null);
+});
+
+test("account: no readable credentials means unknown, with no profile call", async () => {
+  const s = await setup({ cacheAgeMs: 10_000, credentials: null });
+  const usage = await getClaudeUsage(s.deps, newUsageState());
+  assert.equal(usage.account, null);
+  assert.equal(s.profileCalls, 0);
 });
 
 test("429 keeps the last good value with its time and the reason", async () => {
@@ -193,9 +208,45 @@ test("429 keeps the last good value with its time and the reason", async () => {
   assert.equal(usage.reason, "Usage API throttled (429)");
   assert.equal(JSON.parse(await readFile(s.paths.usageFile, "utf8")).metrics.session.percent_used, 1, "file untouched");
 
-  // No Retry-After: no invented backoff, the next tick tries again.
+  // No Retry-After: no call before the next 60 s tick, however often tabs ask.
+  const again = await getClaudeUsage(s.deps, state);
+  await getClaudeUsage({ ...s.deps, now: () => s.now + 59_999 }, state);
+  assert.equal(s.calls.length, 1, "one poll per 60 s");
+  assert.equal(again.fiveHour?.utilization, 1);
+  assert.equal(again.reason, "Usage API throttled (429)");
+  await getClaudeUsage({ ...s.deps, now: () => s.now + FRESH_MS }, state);
+  assert.equal(s.calls.length, 2, "the next tick tries again");
+});
+
+test("every failed attempt waits 60 s: network, 401, 5xx, bad body", async () => {
+  for (const [respond, reason] of [
+    [() => Promise.reject(new Error("socket hang up")), "Usage API request failed (network)"],
+    [() => new Response("", { status: 401 }), "Usage API rejected the token (401)"],
+    [() => new Response("", { status: 503 }), "Usage API returned 503"],
+    [() => Response.json({}), "Usage API response had no 5-hour utilization"],
+  ] as const) {
+    const s = await setup({ cacheAgeMs: 5 * MIN });
+    s.setResponse(respond);
+    const state = newUsageState();
+    assert.equal((await getClaudeUsage(s.deps, state)).reason, reason);
+    await getClaudeUsage(s.deps, state);
+    assert.equal(s.calls.length, 1, `${reason}: no second call within 60 s`);
+    s.setResponse(() => Response.json(API_BODY));
+    const next = await getClaudeUsage({ ...s.deps, now: () => s.now + FRESH_MS }, state);
+    assert.equal(s.calls.length, 2);
+    assert.equal(next.reason, null, "a success clears the pause and the reason");
+    await getClaudeUsage({ ...s.deps, now: () => s.now + FRESH_MS + 1 }, state);
+    assert.equal(s.calls.length, 2, "the fresh file serves the next call");
+  }
+});
+
+test("a Retry-After shorter than 60 s still waits the 60 s tick", async () => {
+  const s = await setup({ cacheAgeMs: 5 * MIN });
+  s.setResponse(() => new Response("", { status: 429, headers: { "retry-after": "5" } }));
+  const state = newUsageState();
   await getClaudeUsage(s.deps, state);
-  assert.equal(s.calls.length, 2);
+  await getClaudeUsage({ ...s.deps, now: () => s.now + 10_000 }, state);
+  assert.equal(s.calls.length, 1);
 });
 
 test("429 with Retry-After: no call until it has passed", async () => {
@@ -282,10 +333,8 @@ test("defaultPaths follow CLAUDE_CONFIG_DIR like Claude Code; the cache stays in
     credentialsFile: "/home/u/.claude/.credentials.json",
     usageFile: "/home/u/.claude/usage-exact.json",
     lockDir: "/tmp/statusline-refresh.lock.d",
-    accountFile: "/home/u/.claude.json",
   });
   const custom = defaultPaths({ CLAUDE_CONFIG_DIR: "/cfg" }, "/home/u");
   assert.equal(custom.credentialsFile, "/cfg/.credentials.json");
-  assert.equal(custom.accountFile, "/cfg/.claude.json");
   assert.equal(custom.usageFile, "/home/u/.claude/usage-exact.json");
 });

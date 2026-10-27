@@ -23,7 +23,7 @@ export interface UsageRow {
   /** When the data was read (ms epoch); null when there is none. */
   asOf: number | null;
   source: RowSource | null;
-  /** Signed-in account, when the source names it (Claude). */
+  /** Claude: the token's account email, null when unknown. Absent for providers that do not name one. */
   account?: string | null;
   /** Why the data is missing or old; for the hover title only. */
   reason: string | null;
@@ -153,7 +153,7 @@ const SOURCE_TEXT: Record<RowSource, string> = {
 export function rowTitle(row: UsageRow, now: number): string {
   const nowDate = new Date(now);
   const lines = [`${row.label} usage limits`];
-  if (row.account) lines.push(`Account: ${row.account}`);
+  if (row.account !== undefined) lines.push(`Account: ${row.account ?? "unknown"}`);
   if (hasKnownWindow(row) || row.source) {
     lines.push(windowLine("5-hour window", row.fiveHour, nowDate));
     lines.push(windowLine("Weekly window", row.weekly, nowDate));
