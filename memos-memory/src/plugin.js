@@ -8,6 +8,7 @@
 import { definePlugin } from "@paperclipai/plugin-sdk";
 import { createCapture, screenMemories, withTimeout } from "./capture.js";
 import { contentHash, normalizeContent } from "./content.js";
+import { createDupJudge } from "./dupjudge.js";
 import { createExtractor, EXTRACT_MODEL, EXTRACT_TIMEOUT_MS } from "./extractor.js";
 import { formatMemoryLine } from "./format.js";
 import { alertIssueFrom, createEventHealth, HEALTH_JOB_KEY } from "./health.js";
@@ -28,6 +29,9 @@ const RETRY_JOB_BUDGET_MS = 4 * 60 * 1000;
 // one makes the new one a duplicate. Tuned on the Ops cube in SLS-200: pairs
 // at 0.83-0.88 were mostly the same fact in other words.
 export const DEFAULT_DUP_SIMILARITY = 0.85;
+// Below dupSimilarity, a hit at this similarity or more goes to the duplicate
+// judge (one LLM call). Paraphrases scored 0.70-0.80 in the SLS-200 replay.
+export const DEFAULT_DUP_JUDGE_FLOOR = 0.7;
 // The dry-run route: items per call, and per company and UTC day. Each item
 // costs one or two OpenRouter calls.
 export const DRY_RUN_MAX_ITEMS = 10;
@@ -121,9 +125,12 @@ export function createMemoryPlugin({ fetchImpl = (url, init) => globalThis.fetch
       saveP: prob(raw.saveP, DEFAULT_SAVE_P),
       routineP: prob(raw.routineP, DEFAULT_ROUTINE_P),
       dupSimilarity: prob(raw.dupSimilarity, DEFAULT_DUP_SIMILARITY),
+      // 0 turns the judge off.
+      dupJudgeFloor: raw.dupJudgeFloor === 0 ? 0 : prob(raw.dupJudgeFloor, DEFAULT_DUP_JUDGE_FLOOR),
       llmConfigured: Boolean(llmKey),
       jev: createJevClient({ apiKey: llmKey, fetchImpl, sleep, now, model: raw.jevModel || JEV_MODEL, url: `${base}/systemone`, timeoutMs: num(raw.jevTimeoutMs, JEV_TIMEOUT_MS) }),
       extractor: createExtractor({ apiKey: llmKey, fetchImpl, sleep, now, model: raw.extractModel || EXTRACT_MODEL, url: `${base}/chat/completions`, timeoutMs: num(raw.extractTimeoutMs, EXTRACT_TIMEOUT_MS), protectTerms }),
+      dupJudge: createDupJudge({ apiKey: llmKey, fetchImpl, sleep, now, model: raw.extractModel || EXTRACT_MODEL, url: `${base}/chat/completions`, timeoutMs: num(raw.extractTimeoutMs, EXTRACT_TIMEOUT_MS) }),
       // An empty `captureProjectIds` captures every project; a list captures only those.
       captureAllowed: (projectId) => captureProjectIds.length === 0 || captureProjectIds.includes(projectId ?? UNSCOPED_PROJECT),
     };
@@ -170,17 +177,30 @@ export function createMemoryPlugin({ fetchImpl = (url, init) => globalThis.fetch
   const retainFor = (ctx) => (cfg) => (scope, content, metadata) => retain(ctx, cfg, { scope, content, metadata });
 
   /**
-   * `{ similarity }` when the scope already holds `content` in other words
-   * (the best search hit reaches cfg.dupSimilarity), else null. A failed
-   * search, or none left before `deadline`, counts the memory as new.
+   * `{ similarity, by }` when the scope already holds `content` in other
+   * words, else null. `by` is "cosine" when the best search hit reaches
+   * cfg.dupSimilarity, "judge" when the duplicate judge says one of the hits
+   * at cfg.dupJudgeFloor or more states the same fact. A failed search or
+   * judge, or no time left before `deadline`, counts the memory as new.
    */
-  function nearDuplicateFor(cfg) {
+  function nearDuplicateFor(cfg, logger = null) {
     return async (scope, content, { deadline = Infinity } = {}) => {
       const left = Math.min(cfg.captureTimeoutMs, deadline - now());
       if (left < 100) return null;
       const hits = await cfg.client.search({ scope, query: content, topK: 3, timeoutMs: left });
-      const best = Math.max(-1, ...hits.map((h) => Number(h.metadata?.relativity)).filter(Number.isFinite));
-      return best >= cfg.dupSimilarity ? { similarity: Math.round(best * 1000) / 1000 } : null;
+      const scored = hits.map((h) => ({ text: h.content, score: Number(h.metadata?.relativity) })).filter((h) => Number.isFinite(h.score)).sort((a, b) => b.score - a.score);
+      const best = scored[0]?.score ?? -1;
+      const similarity = Math.round(best * 1000) / 1000;
+      if (best >= cfg.dupSimilarity) return { similarity, by: "cosine" };
+      const candidates = cfg.dupJudgeFloor > 0 ? scored.filter((h) => h.score >= cfg.dupJudgeFloor) : [];
+      if (candidates.length === 0 || deadline - now() < 100) return null;
+      try {
+        const verdict = await cfg.dupJudge.judge(content, candidates.map((c) => c.text), { deadline });
+        return verdict.duplicate ? { similarity, by: "judge", judgeCostUsd: verdict.costUsd } : null;
+      } catch (err) {
+        logger?.warn(`duplicate judge failed; the memory counts as new: ${err.message}`);
+        return null;
+      }
     };
   }
 
@@ -199,7 +219,7 @@ export function createMemoryPlugin({ fetchImpl = (url, init) => globalThis.fetch
   }
 
   async function capture1(ctx, cfg, item) {
-    return capture.processItem(ctx, cfg, { ...item, firstSeenAt: now() }, { retain: retainFor(ctx)(cfg), nearDuplicate: nearDuplicateFor(cfg), deadline: now() + EVENT_BUDGET_MS });
+    return capture.processItem(ctx, cfg, { ...item, firstSeenAt: now() }, { retain: retainFor(ctx)(cfg), nearDuplicate: nearDuplicateFor(cfg, ctx.logger), deadline: now() + EVENT_BUDGET_MS });
   }
 
   async function onCommentCreated(ctx, event) {
@@ -336,7 +356,7 @@ export function createMemoryPlugin({ fetchImpl = (url, init) => globalThis.fetch
     if (!cfg.captureAllowed(runCtx.projectId)) {
       return { error: "Memory capture is off for this project; the memory was not stored.", data: { status: "rejected" } };
     }
-    const near = await nearDuplicateFor(cfg)(scope, content);
+    const near = await nearDuplicateFor(cfg, ctx.logger)(scope, content);
     if (near) return { content: "Already stored in other words; nothing changed.", data: { status: "duplicate", similarity: near.similarity } };
     const res = await retain(ctx, cfg, {
       scope,
@@ -370,8 +390,9 @@ export function createMemoryPlugin({ fetchImpl = (url, init) => globalThis.fetch
   }
 
   /**
-   * POST /dry-run?companyId=…, body `{ comments: [{ issueId, commentId, source? }], dupCheck? }`
-   * or `{ memories: [{ id, text }] }`, at most DRY_RUN_MAX_ITEMS. Runs the
+   * POST /dry-run?companyId=…, body `{ comments: [{ issueId, commentId, source? }], dupCheck? }`,
+   * `{ memories: [{ id, text }] }` or `{ duplicates: [{ id, text, candidates: [text] }] }`
+   * (the duplicate judge alone), at most DRY_RUN_MAX_ITEMS. Runs the
    * capture rules (Jev, extractor, code check, and the duplicate search when
    * `dupCheck`) and answers what a save would store. Stores, logs and marks
    * nothing. The answer holds memory text from this company's comments only.
@@ -381,13 +402,31 @@ export function createMemoryPlugin({ fetchImpl = (url, init) => globalThis.fetch
     const body = input.body && typeof input.body === "object" ? input.body : {};
     const comments = Array.isArray(body.comments) ? body.comments : null;
     const memories = Array.isArray(body.memories) ? body.memories : null;
-    if (!comments === !memories) return { status: 400, body: { error: "send either comments or memories" } };
-    const list = comments ?? memories;
+    const duplicates = Array.isArray(body.duplicates) ? body.duplicates : null;
+    if ([comments, memories, duplicates].filter(Boolean).length !== 1) return { status: 400, body: { error: "send one of comments, memories or duplicates" } };
+    const list = comments ?? memories ?? duplicates;
     if (list.length === 0 || list.length > DRY_RUN_MAX_ITEMS) return { status: 400, body: { error: `send 1 to ${DRY_RUN_MAX_ITEMS} items` } };
     const cfg = await loadConfig(ctx, companyId);
     if (!captureReady(cfg)) return { status: 503, body: { error: "capture is not configured for this company" } };
     if (!(await takeDryRunBudget(ctx, companyId, list.length))) return { status: 429, body: { error: `dry-run budget of ${DRY_RUN_MAX_PER_DAY} items a day is spent` } };
     const deadline = now() + EVENT_BUDGET_MS;
+    if (duplicates) {
+      const texts = (xs) => (Array.isArray(xs) ? xs.filter((x) => typeof x === "string" && x.trim()).slice(0, 3) : []);
+      const results = await Promise.all(
+        duplicates.map(async (d) => {
+          const id = d?.id ?? null;
+          const candidates = texts(d?.candidates);
+          if (typeof d?.text !== "string" || !d.text.trim() || candidates.length === 0) return { id, verdict: "error", error: "need text and 1 to 3 candidates" };
+          try {
+            const v = await cfg.dupJudge.judge(d.text, candidates, { deadline });
+            return { id, verdict: v.duplicate ? "duplicate" : "new", of: v.of, costUsd: v.costUsd };
+          } catch (err) {
+            return { id, verdict: "error", error: err.message };
+          }
+        }),
+      );
+      return { status: 200, body: { results } };
+    }
     if (memories) {
       const valid = (m) => typeof m?.text === "string" && m.text.trim().length > 0;
       const results = await Promise.all(memories.map((m) => (valid(m) ? judgeMemory(cfg, { id: m.id ?? null, text: m.text }, deadline) : { id: m?.id ?? null, verdict: "error", error: "no text" })));
@@ -448,7 +487,7 @@ export function createMemoryPlugin({ fetchImpl = (url, init) => globalThis.fetch
           if (!configs.has(companyId)) configs.set(companyId, await loadConfig(ctx, companyId));
           return configs.get(companyId);
         };
-        const summary = await capture.retryPending(ctx, { configFor, retainFor: retainFor(ctx), nearDuplicateFor, deadline: now() + RETRY_JOB_BUDGET_MS });
+        const summary = await capture.retryPending(ctx, { configFor, retainFor: retainFor(ctx), nearDuplicateFor: (cfg) => nearDuplicateFor(cfg, ctx.logger), deadline: now() + RETRY_JOB_BUDGET_MS });
         if (summary.retried || summary.dropped) ctx.logger.info("memory capture retry job", summary);
       });
 

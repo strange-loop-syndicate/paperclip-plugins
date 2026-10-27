@@ -270,7 +270,7 @@ export function createCapture({ now = () => Date.now() } = {}) {
     const duplicates = [];
     for (const m of kept) {
       const hit = nearDuplicate ? await nearDuplicate(scope, m.content, { deadline }) : null;
-      if (hit) duplicates.push({ ...m, similarity: hit.similarity });
+      if (hit) duplicates.push({ ...m, similarity: hit.similarity, by: hit.by ?? "cosine" });
       else fresh.push(m);
     }
     if (duplicates.length) record.duplicates = duplicates;

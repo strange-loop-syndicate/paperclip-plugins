@@ -46,6 +46,7 @@ This package has two parts. They work independently.
 | Decision: keep threshold (saveP) | `saveP` | `0.7` | Probability a content question must reach for an item to pass |
 | Decision: routine threshold (routineP) | `routineP` | `0.5` | An item whose "routine status only" probability reaches this is skipped |
 | Decision: duplicate threshold | `dupSimilarity` | `0.85` | A new memory whose best MemOS search hit in its scope reaches this similarity (a cosine) is a duplicate and is not stored |
+| Decision: duplicate judge floor | `dupJudgeFloor` | `0.7` | A hit below `dupSimilarity` but at least this similar goes to the duplicate judge (one short call to the extract model). It answers "same fact or not". `0` turns the judge off |
 | Decision: timeout (ms) | `jevTimeoutMs` | `5000` | Timeout for each try. Up to 3 tries |
 | Extraction: model | `extractModel` | `~anthropic/claude-haiku-latest` | Writes the short memories (the same Haiku alias MemOS's reader uses) |
 | Extraction: timeout (ms) | `extractTimeoutMs` | `15000` | Timeout for each try. Up to 3 tries |
@@ -154,7 +155,7 @@ Sharing is off by default. The **Memory sharing** page under company settings is
 | **Extraction** | One Haiku call per passed item. It keeps only knowledge that stays true after the task closes: lessons, decisions that set a rule, lasting facts about systems, and outcomes a later task can reuse (a measured limit, a proven approach or dead end). It drops task status, task logs (merged, deployed, tests N/N, exit codes) and IDs. Most items give an empty list, which saves nothing. At most 3 memories, 300 characters each. The task title is sent, not the task ID. A reply cut off at `max_tokens` or with invalid JSON keeps its complete memory objects (`salvaged: true`). A reply with no usable list is an `error` verdict, not a retry |
 | **Placeholders** | Paths, URLs, emails, IP addresses and `protectTerms` go to the extract model as `{{P1}}`, `{{P2}}`, … and are put back in its answer. The OpenRouter extract call rewrote `/Users/claude/` to `/Users/[PERSON_NAME]/`; MemOS stores text as given |
 | **Code check** | Drops a memory with a commit hash, a run or card ID, a PR number, a test count, an exit code, task-status words (still, blocked, waiting, pending, not yet), a per-task outcome (was merged, passed review), this company's task ID, a leftover redaction label, or a second copy in the same item. All dropped: `noise` verdict. See `src/noise.js` |
-| **Duplicate search** | Each remaining memory is searched in its own scope first. A best hit at `dupSimilarity` or more skips it. All skipped: `duplicate` verdict. A failed search stores the memory (fails open). Runs in both modes |
+| **Duplicate search** | Each remaining memory is searched in its own scope first (top 3). A best hit at `dupSimilarity` or more skips it (`by: "cosine"`). Hits from `dupJudgeFloor` up go to the duplicate judge, which skips the memory when one states the same fact (`by: "judge"`). All skipped: `duplicate` verdict. A failed search or judge stores the memory (fails open). Runs in both modes |
 | **Save** | In `save` mode, each memory is a sync `fast` add with our IDs. Raw comment text is never stored |
 | **Shadow** | In `shadow` mode (the default), verdicts and extracted memories are logged and nothing is stored. `save` mode logs the verdicts too, see below |
 
@@ -177,6 +178,7 @@ Sharing is off by default. The **Memory sharing** page under company settings is
 
 - **Route:** `POST /api/plugins/sls.memos-memory/api/dry-run?companyId=<id>`, as a board user or an agent of that company. It runs in the worker, which holds the extractor key.
 - **Comments:** body `{ "comments": [{ "issueId", "commentId", "source"? }], "dupCheck"? }`. Each answer is the verdict entry a capture would log, with memory text. The duplicate search runs only with `"dupCheck": true`.
+- **Duplicate judge alone:** body `{ "duplicates": [{ "id", "text", "candidates": [text, …] }] }` (1 to 3 candidates). Each answer is `duplicate` (with `of`, the 1-based candidate) or `new`.
 - **Stored memories:** body `{ "memories": [{ "id", "text" }] }`. The extractor and the code check judge each text: `keep` (with the memories it gives) or `delete` (with the reasons). No Jev call.
 - **Stores, logs and marks nothing.** A later event for the same comment is still captured.
 - **Limits:** 1 to 10 items a call, 3000 items per company and UTC day (namespace `memos-dryrun`). Each item costs one or two OpenRouter calls.
