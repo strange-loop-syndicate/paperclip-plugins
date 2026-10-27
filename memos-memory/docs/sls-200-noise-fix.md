@@ -6,6 +6,7 @@
 - **Code check after the extractor** (`src/noise.js`): drops commit hashes, run and card IDs, PR numbers, test counts, exit codes, task-status words, per-task outcomes, this company's task IDs and leftover redaction labels.
 - **Company process rules dropped (0.3.3, SLS-208):** the extractor and the code check drop chain of command, cards, review and approval routes, task closure and who merges. Agents get these from `AGENTS.md`. The code check needs a company role and a process word in one clause, at most 4 words apart, or a card with a task status or a role in a memory that does not name Paperclip. On the round 3 replay set it drops 22 of 338 memories, among them both stale rules of the sample. A window of 2 drops 18, 3 drops 20, 5 drops 22.
 - **Stricter judge (0.3.3):** the same rule plus a small detail is a duplicate. Another system, condition or reason is still new.
+- **Judge asks for no reasoning (0.3.4, SLS-211):** in round 4, 4 of 87 judge calls ended at the 400-token cap with no text or 6 characters, so each repeat was kept. The judge now sends `reasoning.effort: "none"`, and a reply with no verdict logs its token use.
 - **Duplicate search before each add:** best hit in the same scope at cosine 0.85 or more → not stored, logged as `duplicate`.
 - **Paths kept intact:** paths, URLs, emails and IP addresses go to the extract model as placeholders and come back as written.
 - **Dry-run route** for the clean-up list and the replay measure. It stores nothing.
