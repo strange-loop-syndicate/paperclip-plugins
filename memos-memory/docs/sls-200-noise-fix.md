@@ -14,6 +14,10 @@
 - **Fix:** placeholders around the call. Names are not paths, so `protectTerms` lets an operator protect a user name too. A memory that still holds a redaction label is dropped (`redacted`).
 - **Deploy setting:** set `protectTerms` to at least `["Oleg"]`. Without it, a memory that names him comes back as `[PERSON_NAME]` and is dropped.
 
+## Duplicate judge: cosine alone cannot reach 3%
+- **In the 0.3.0 replay, paraphrases and distinct facts on one topic both scored 0.70–0.80.** At `dupSimilarity` 0.80, 40 of 318 kept memories still restated an older one (27 nearly word for word). The 38 distinct pairs in the same band would be lost by a lower cut-off.
+- **So hits from 0.70 to the threshold go to a judge:** one short call to the extract model, "same fact or not", with the top 3 hits. A failed call stores the memory.
+
 ## Duplicate threshold: 0.85, not 0.88
 - **On the Ops cube (666 memories), the same fact in other words scored 0.83–0.88.** Examples: the "agents never set `done`" rule at 0.834, the MemOS fine-search result at 0.857, the checkout rule at 0.869.
 - **Different facts start below 0.83.** At 0.80–0.83 most pairs were related but distinct.
@@ -34,6 +38,12 @@ The script reads MemOS and writes files. It deletes nothing.
 4. `node e2e/replay-window.mjs dedup http://127.0.0.1:8001 results dedup.json`: the duplicate check in comment order, on a new probe-company cube. No real cube is touched.
    - **This writes to MemOS:** the cube `paperclip-e2e-probe-company-sls200-replay-<ms>` stays after the run. Its name is in `dedup.json` (`scope`) and goes in the step 5 report.
 5. `node e2e/replay-window.mjs report results dedup.json report.md`: counts and a seeded sample of 30 to grade.
+
+**With the duplicate judge (0.3.1),** steps 4 and 5 become:
+1. `node e2e/replay-window.mjs embed http://127.0.0.1:8001 results state.json`: adds every memory that passed the rules to a new probe-company cube, 6 at a time. The cube name is in `state.json`.
+2. `node e2e/replay-window.mjs judge-batches state.json judge --at 0.80 --floor 0.70`: the cosine check against every older memory. The rest, with older hits from 0.70 up, become `duplicates` bodies for the dry-run route.
+3. POST each `judge/batch-NNN.json` to the dry-run route. Save the answers as `judge/result-NNN.json`.
+4. `node e2e/replay-window.mjs final state.json judge report.md --seed <n>`: counts, a seeded sample of 30, and every kept pair from 0.70 up, to judge by hand.
 
 <details>
 <summary>🤖 For agents: calibration data (can be skipped)</summary>

@@ -1,7 +1,7 @@
 const manifest = {
   id: "sls.memos-memory",
   apiVersion: 1,
-  version: "0.3.0",
+  version: "0.3.1",
   displayName: "MemOS Memory",
   description:
     "Turns agent and board comments into short memories (decisions, lessons, outcomes, facts) in a self-hosted MemOS server, scoped per company and project. A decision model (Jev) decides what is worth keeping; an extract model writes it short. Gives agents memory_recall / memory_retain tools.",
@@ -88,6 +88,15 @@ const manifest = {
         title: "Decision: duplicate threshold",
         description:
           "Before a memory is stored, MemOS is searched for it. If the best hit is at least this similar (0.5 to 1, a cosine), the memory is a duplicate and is not stored. Default 0.85.",
+      },
+      dupJudgeFloor: {
+        type: "number",
+        minimum: 0,
+        maximum: 1,
+        default: 0.7,
+        title: "Decision: duplicate judge floor",
+        description:
+          "A search hit below the duplicate threshold but at least this similar goes to the duplicate judge, one short call to the extract model: same fact or not. 0 turns the judge off. Default 0.7.",
       },
       jevTimeoutMs: {
         type: "integer",

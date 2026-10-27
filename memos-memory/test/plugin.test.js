@@ -944,6 +944,14 @@ describe("capture: durable memories only (SLS-200)", () => {
     assert.deepEqual(adds(server).map((r) => r.body.memory_content), ["Never run npm install in /Users/claude/work/paperclip-plugins-repo while Oleg's server at http://127.0.0.1:3100/api runs."]);
   });
 
+  it("tells the extractor to drop open gaps, to-dos and task assignments", async () => {
+    const h = await setup(server);
+    await h.emit("issue.comment.created", ...commentEvent());
+    const system = extractCalls(server)[0].body.messages[0].content;
+    assert.match(system, /Open gaps, bugs, missing features and to-dos/);
+    assert.match(system, /Who works on which task, revision or step/);
+  });
+
   it("gives the extractor the task title but not the task ID", async () => {
     const h = await setup(server);
     await h.emit("issue.comment.created", ...commentEvent());
@@ -961,7 +969,7 @@ describe("capture: durable memories only (SLS-200)", () => {
     assert.equal(adds(server).length, 0);
     const [entry] = await shadowEntries(h);
     assert.equal(entry.verdict, "duplicate");
-    assert.deepEqual(entry.duplicates, [{ type: "decision", similarity: 0.86 }]);
+    assert.deepEqual(entry.duplicates, [{ type: "decision", similarity: 0.86, by: "cosine" }]);
     const search = server.memosRequests().find((r) => r.path === "/product/search").body;
     assert.equal(search.mem_cube_id, `paperclip-${A}-p1`);
     assert.equal(search.query, MEMORY);
@@ -1002,7 +1010,7 @@ describe("capture: durable memories only (SLS-200)", () => {
     await h.emit("issue.comment.created", ...commentEvent());
     const [entry] = await shadowEntries(h);
     assert.equal(entry.verdict, "duplicate");
-    assert.deepEqual(entry.duplicates, [{ type: "decision", content: MEMORY, similarity: 1 }]);
+    assert.deepEqual(entry.duplicates, [{ type: "decision", content: MEMORY, similarity: 1, by: "cosine" }]);
     assert.deepEqual(entry.memories, []);
   });
 
@@ -1109,5 +1117,98 @@ describe("duplicate search: the event deadline holds", () => {
     await h.emit("issue.comment.created", ...commentEvent());
     assert.equal(server.memosRequests().filter((r) => r.path === "/product/search").length, 0);
     assert.equal(adds(server).length, 1);
+  });
+});
+
+describe("duplicate judge: candidates the cosine check cannot settle (SLS-200)", () => {
+  let server;
+  before(async () => (server = await startFakeServer()));
+  after(() => server.close());
+  beforeEach(() => resetServer(server));
+
+  const STORED = "Recall runs before the prompt, inside a wrapper command.";
+  // The fake answers the judge's chat call with this, and the extractor's with memories.
+  const judgeReplies = (verdict) => (b) => (b.messages[0].content.includes("free of repeats") ? { content: verdict } : null);
+  const judgeCalls = () => extractCalls(server).filter((r) => r.body.messages[0].content.includes("free of repeats"));
+
+  it("a hit between the judge floor and the threshold goes to the judge; a yes skips the memory", async () => {
+    seedMemory(server.state, { companyId: A, projectId: "p1", content: STORED });
+    server.state.similarity = () => 0.75;
+    server.state.llm.chatReply = judgeReplies('{"duplicate":true,"of":1}');
+    const now = clock();
+    const h = await setup(server, { dupSimilarity: 0.8 }, {}, { now });
+    await h.emit("issue.comment.created", ...commentEvent());
+    assert.equal(adds(server).length, 0);
+    const [entry] = await shadowEntries(h);
+    assert.equal(entry.verdict, "duplicate");
+    assert.deepEqual(entry.duplicates, [{ type: "decision", similarity: 0.75, by: "judge" }]);
+    const sent = judgeCalls()[0].body.messages[1].content;
+    assert.match(sent, /NEW:\nPre-prompt recall runs in a command wrapper/);
+    assert.match(sent, /EXISTING:\n1\. Recall runs before the prompt/);
+  });
+
+  it("a no from the judge stores the memory", async () => {
+    seedMemory(server.state, { companyId: A, projectId: "p1", content: STORED });
+    server.state.similarity = () => 0.75;
+    server.state.llm.chatReply = judgeReplies('{"duplicate":false,"of":null}');
+    const h = await setup(server, { dupSimilarity: 0.8 });
+    await h.emit("issue.comment.created", ...commentEvent());
+    assert.equal(judgeCalls().length, 1);
+    assert.equal(adds(server).length, 1);
+  });
+
+  it("no judge call below the floor, at or above the threshold, or with the floor at 0", async () => {
+    seedMemory(server.state, { companyId: A, projectId: "p1", content: STORED });
+    server.state.llm.chatReply = judgeReplies('{"duplicate":true,"of":1}');
+    server.state.similarity = () => 0.69;
+    await (await setup(server, { dupSimilarity: 0.8 })).emit("issue.comment.created", ...commentEvent());
+    assert.equal(judgeCalls().length, 0);
+    assert.equal(adds(server).length, 1);
+    resetServer(server);
+    seedMemory(server.state, { companyId: A, projectId: "p1", content: STORED });
+    server.state.llm.chatReply = judgeReplies('{"duplicate":true,"of":1}');
+    server.state.similarity = () => 0.75;
+    await (await setup(server, { dupSimilarity: 0.8, dupJudgeFloor: 0 })).emit("issue.comment.created", ...commentEvent());
+    assert.equal(judgeCalls().length, 0);
+    assert.equal(adds(server).length, 1);
+    resetServer(server);
+    seedMemory(server.state, { companyId: A, projectId: "p1", content: STORED });
+    server.state.llm.chatReply = judgeReplies('{"duplicate":false,"of":null}');
+    server.state.similarity = () => 0.81;
+    await (await setup(server, { dupSimilarity: 0.8 })).emit("issue.comment.created", ...commentEvent());
+    assert.equal(judgeCalls().length, 0, "the cosine check settles it");
+    assert.equal(adds(server).length, 0);
+  });
+
+  it("a judge that gives no verdict stores the memory (fails open)", async () => {
+    seedMemory(server.state, { companyId: A, projectId: "p1", content: STORED });
+    server.state.similarity = () => 0.75;
+    server.state.llm.chatReply = judgeReplies("I cannot tell.");
+    const h = await setup(server, { dupSimilarity: 0.8 });
+    await h.emit("issue.comment.created", ...commentEvent());
+    assert.equal(adds(server).length, 1);
+    assert.ok(h.logs.some((l) => /duplicate judge failed/.test(l.message)));
+  });
+
+  it("the dry-run route judges given pairs and stores nothing", async () => {
+    server.state.llm.chatReply = (b) => ({ content: b.messages[1].content.includes("same lesson") ? '{"duplicate":true,"of":2}' : '{"duplicate":false,"of":null}' });
+    const h = await setup(server);
+    const res = await dryRun(h, {
+      duplicates: [
+        { id: "a", text: "The same lesson, said again.", candidates: ["Another fact.", "The same lesson."] },
+        { id: "b", text: "A new fact.", candidates: ["Another fact."] },
+        { id: "c", text: "No candidates.", candidates: [] },
+      ],
+    });
+    assert.deepEqual(
+      res.body.results.map((r) => [r.id, r.verdict, r.of ?? null]),
+      [
+        ["a", "duplicate", 2],
+        ["b", "new", null],
+        ["c", "error", null],
+      ],
+    );
+    assert.equal(server.memosRequests().length, 0);
+    assert.equal((await dryRun(h, { duplicates: [{ id: "x", text: "t", candidates: ["c"] }], memories: [{ id: "y", text: "t" }] })).status, 400);
   });
 });

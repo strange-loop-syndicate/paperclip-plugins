@@ -14,7 +14,7 @@ const autoLabel = (key) =>
 
 const GROUPS = [
   ["Capture", ["captureMode", "captureProjectIds", "captureComments", "captureRunOutcomes"]],
-  ["Decision", ["jevModel", "saveP", "routineP", "dupSimilarity", "jevTimeoutMs"]],
+  ["Decision", ["jevModel", "saveP", "routineP", "dupSimilarity", "dupJudgeFloor", "jevTimeoutMs"]],
   ["Extraction", ["extractModel", "extractTimeoutMs", "protectTerms"]],
   ["LLM provider", ["openrouterBaseUrl", "openrouterApiKeyRef"]],
   ["MemOS", ["memosBaseUrl", "captureTimeoutMs"]],
@@ -73,6 +73,6 @@ describe("settings page: the plugin config form", () => {
       "captureComments", "captureRunOutcomes", "captureProjectIds",
     ];
     assert.deepEqual(v1.filter((k) => !(k in props)), ["memosApiKeyRef"]);
-    assert.deepEqual(keys.filter((k) => !v1.includes(k)).sort(), ["dupSimilarity", "eventHealthIssue", "protectTerms"]);
+    assert.deepEqual(keys.filter((k) => !v1.includes(k)).sort(), ["dupJudgeFloor", "dupSimilarity", "eventHealthIssue", "protectTerms"]);
   });
 });
