@@ -1,6 +1,6 @@
 {
   "name": "@sls/memos-memory",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Paperclip memory plugin backed by self-hosted MemOS: Jev-gated short memories, pre-prompt recall for claude_local and codex_local",
   "private": true,
   "type": "module",

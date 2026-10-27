@@ -4,6 +4,8 @@
 - **Extractor keeps durable knowledge only:** lessons, decisions that set a rule, lasting facts about systems, and outcomes a later task can reuse. Task status, task logs and IDs are dropped. Most comments now give an empty list.
 - **`outcome` means a reusable result:** a measured limit, or an approach proven to work or to fail. "Merged", "deployed", "accepted" and "tests pass" are not outcomes. The Jev outcome question asks the same.
 - **Code check after the extractor** (`src/noise.js`): drops commit hashes, run and card IDs, PR numbers, test counts, exit codes, task-status words, per-task outcomes, this company's task IDs and leftover redaction labels.
+- **Company process rules dropped (0.3.3, SLS-208):** the extractor and the code check drop chain of command, cards, review and approval routes, task closure and who merges. Agents get these from `AGENTS.md`. On the round 3 replay set the code check drops 24 of 338 memories, among them both stale rules of the sample.
+- **Stricter judge (0.3.3):** the same rule plus a small detail is a duplicate. Another system, condition or reason is still new.
 - **Duplicate search before each add:** best hit in the same scope at cosine 0.85 or more → not stored, logged as `duplicate`.
 - **Paths kept intact:** paths, URLs, emails and IP addresses go to the extract model as placeholders and come back as written.
 - **Dry-run route** for the clean-up list and the replay measure. It stores nothing.

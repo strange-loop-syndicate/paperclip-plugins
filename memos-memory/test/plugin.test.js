@@ -952,6 +952,29 @@ describe("capture: durable memories only (SLS-200)", () => {
     assert.match(system, /Who works on which task, revision or step/);
   });
 
+  it("tells the extractor to drop company process rules and keep tool and server lessons (SLS-208)", async () => {
+    const h = await setup(server);
+    await h.emit("issue.comment.created", ...commentEvent());
+    const system = extractCalls(server)[0].body.messages[0].content;
+    assert.match(system, /Company process rules: chain of command, who answers or decides, cards, review and approval routes, task status and closure, who merges/);
+    assert.match(system, /Keep a lesson about how a tool, a plugin or the Paperclip server behaves/);
+    // The old wording invited role rules in as decisions.
+    assert.doesNotMatch(system, /who may do what|A standing rule about which role/);
+  });
+
+  it("drops a process-rule memory after the extractor and keeps a server lesson (SLS-208)", async () => {
+    const serverLesson = "In Paperclip, a task cannot move to in_review unless its close card is attached to that task itself.";
+    server.state.llm.memories = [
+      { type: "decision", text: "Only the Project Director or the Project Lead merges a pull request." },
+      { type: "lesson", text: serverLesson },
+    ];
+    const now = clock();
+    const h = await setup(server, {}, {}, { now });
+    await h.emit("issue.comment.created", ...commentEvent());
+    assert.deepEqual(adds(server).map((r) => r.body.memory_content), [serverLesson]);
+    assert.deepEqual((await shadowEntries(h))[0].dropped, [{ type: "decision", reason: "process-rule" }]);
+  });
+
   it("gives the extractor the task title but not the task ID", async () => {
     const h = await setup(server);
     await h.emit("issue.comment.created", ...commentEvent());
@@ -1200,6 +1223,19 @@ describe("duplicate judge: candidates the cosine check cannot settle (SLS-200)",
     const { body } = judgeCalls()[0];
     assert.equal(body.max_tokens, 400);
     assert.match(body.messages[0].content, /Start your answer with the JSON, before any other text/);
+  });
+
+  it("tells the judge that the same rule plus a small detail is a duplicate (SLS-208)", async () => {
+    seedMemory(server.state, { companyId: A, projectId: "p1", content: STORED });
+    server.state.similarity = () => 0.75;
+    server.state.llm.chatReply = judgeReplies('{"duplicate":true,"of":1}');
+    const h = await setup(server, { dupSimilarity: 0.8 });
+    await h.emit("issue.comment.created", ...commentEvent());
+    const system = judgeCalls()[0].body.messages[0].content;
+    assert.match(system, /The same rule, fact or lesson plus a small detail, such as an example, a path, a log line, a version, a number, a message text or one more step of the same procedure: duplicate\./);
+    assert.match(system, /NEW adds another system, another condition or another reason that a later agent needs to act correctly, and EXISTING lacks it: not a duplicate\./);
+    // Round 3: "a number" on the not-a-duplicate side kept most repeats.
+    assert.doesNotMatch(system, /a number or a reason that EXISTING lacks/);
   });
 
   it("a reply cut off at the cap before the verdict fails open and logs its shape, not its text (SLS-206)", async () => {

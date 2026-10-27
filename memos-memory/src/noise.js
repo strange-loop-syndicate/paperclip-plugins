@@ -1,5 +1,5 @@
-// A code check after the extractor: drops memories that are task logs or
-// task status, whatever the model wrote. A memory must still be true and
+// A code check after the extractor: drops memories that are task logs, task
+// status or company process rules, whatever the model wrote. A memory must still be true and
 // useful after its source task closes. The extractor prompt asks for the same;
 // this check holds when the model does not follow it (SLS-200).
 
@@ -27,6 +27,24 @@ const RULES = [
   ],
 ];
 
+// Company process rules: chain of command, cards, review and approval routes,
+// task closure, who merges. Agents get these from AGENTS.md, and a memory copy
+// goes stale when the rule changes (SLS-199). Two shapes only, so that lessons
+// about how Paperclip behaves stay:
+// - a company role next to a process word ("the Project Director merges");
+// - a card next to a task status, unless the memory is about Paperclip itself.
+// Role names are matched by case, and removed before the process words are,
+// so "Code Reviewer" alone is not "review".
+const ROLE = /\b(?:(?:Project )?Directors?|Project Leads?|Code Reviewers?|Architects?|Engineers?|DevOps|Experiment Owners?|task creators?|approvers?)\b/g;
+const PROCESS_WORD = /\b(?:merges?|merged|merging|reviews?|reviewed|reviewing|approv\w*|accept\w*|sign[- ]?offs?|cards?|escalat\w*|clos(?:e|es|ed|ing)|chain of command)\b/i;
+const CARD = /\bcards?\b/i;
+const CARD_STATUS = /\b(?:blocked|in_review|in review)\b/i;
+
+function isProcessRule(s) {
+  if (s.match(ROLE) && PROCESS_WORD.test(s.replace(ROLE, " "))) return true;
+  return CARD.test(s) && CARD_STATUS.test(s) && !/\bPaperclip\b/i.test(s);
+}
+
 /**
  * Why `text` is not a durable memory, or null when it may be one.
  * `taskPrefix` (for example "SLS") also drops a memory that names a task of
@@ -35,6 +53,7 @@ const RULES = [
 export function noiseReason(text, { taskPrefix = null } = {}) {
   const s = String(text ?? "");
   for (const [reason, re] of RULES) if (re.test(s)) return reason;
+  if (isProcessRule(s)) return "process-rule";
   if (taskPrefix && /^[A-Z][A-Z0-9]{0,9}$/.test(taskPrefix) && new RegExp(`\\b${taskPrefix}-\\d+\\b`).test(s)) return "task-id";
   return null;
 }
